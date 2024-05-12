@@ -17,7 +17,6 @@ def to_magnitude_and_phase(data):
     return np.abs(data), np.angle(data)
 
 
-# @numba.jit(nopython=True)
 def log_polar_transform(data, radius=None, order=None):
     if radius is None:
         radius = data.shape[0] // 2
@@ -25,18 +24,11 @@ def log_polar_transform(data, radius=None, order=None):
     return warp_polar(data, radius=radius, scaling='log', order=order, output_shape=shape)
 
 
-# @numba.jit(nopython=True)
-def fourier_mellin(a, b, mask, force_scale=True):
-    # Band-pass filter both images
-    time_start = time.time()
-    blurred_a = difference_of_gaussians(a, 5, 20)
-    blurred_b = difference_of_gaussians(b, 5, 20)
-    print(f"  > Band-pass filtering took {time.time() - time_start} seconds")
-
+def register(a, b, mask, force_scale=True):
     # Prepare and apply mask
     time_start = time.time()
     # Add black border to the mask
-    mask = np.pad(mask, 150, mode='constant', constant_values=0)
+    mask = np.pad(mask, 100, mode='constant', constant_values=0)
     # Resize mask to image size
     mask = resize(mask, a.shape, anti_aliasing=True)
     # Gaussian blur the mask

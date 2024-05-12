@@ -1,23 +1,43 @@
 import time
-import numba
+
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from skimage.filters import difference_of_gaussians
 from skimage.registration import phase_cross_correlation
 from skimage.transform import warp_polar, resize, warp, SimilarityTransform
 
-from utils import image
+import pyopencl as cl
+import pyopencl.array as cla
+import pyvkfft.opencl
+from pyvkfft.fft import fftn as vkfftn, ifftn as vkifftn, rfftn as vkrfftn, irfftn as vkirfftn
+from pyvkfft.opencl import VkFFTApp
+from pyvkfft.accuracy import l2, li
 
+
+ctx = None
+# Find the first OpenCL GPU available and use it, unless
+for p in cl.get_platforms():
+    for d in p.get_devices():
+        if d.type & cl.device_type.GPU == 0:
+            continue
+        print("Selected device: ", d.name)
+        ctx = cl.Context(devices=(d,))
+        break
+    if ctx is not None:
+        break
+cq = cl.CommandQueue(ctx)
+print("Created a command queue")
 
 def fft(data):
-    return np.fft.fftshift(np.fft.fft2(data))
+    p = cla.to_device(cq, data.astype(np.complex64))
+    p = vkfftn(p, p)
+    return np.fft.fftshift(p.get())
 
 
 def to_magnitude_and_phase(data):
     return np.abs(data), np.angle(data)
 
 
-# @numba.jit(nopython=True)
 def log_polar_transform(data, radius=None, order=None):
     if radius is None:
         radius = data.shape[0] // 2
@@ -25,7 +45,6 @@ def log_polar_transform(data, radius=None, order=None):
     return warp_polar(data, radius=radius, scaling='log', order=order, output_shape=shape)
 
 
-# @numba.jit(nopython=True)
 def fourier_mellin(a, b, mask, force_scale=True):
     # Band-pass filter both images
     time_start = time.time()
@@ -36,7 +55,7 @@ def fourier_mellin(a, b, mask, force_scale=True):
     # Prepare and apply mask
     time_start = time.time()
     # Add black border to the mask
-    mask = np.pad(mask, 150, mode='constant', constant_values=0)
+    mask = np.pad(mask, 100, mode='constant', constant_values=0)
     # Resize mask to image size
     mask = resize(mask, a.shape, anti_aliasing=True)
     # Gaussian blur the mask

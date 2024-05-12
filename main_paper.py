@@ -40,14 +40,27 @@ if __name__ == '__main__':
 
         start = time.time()
 
-        # Apply fan transformation
-        a, a_mask = image.extract_data_and_mask(image.to_fan(a_raw, a_aperture))
-        b, b_mask = image.extract_data_and_mask(image.to_fan(b_raw, b_aperture))
+        # # Apply fan transformation
+        # a, a_mask = image.extract_data_and_mask(image.to_fan(a_raw, a_aperture))
+        # b, b_mask = image.extract_data_and_mask(image.to_fan(b_raw, b_aperture))
+        a = a_raw
+        b = b_raw
+
+
+        # Mask should be the same size as the image with a black border of 5% of the image size
+        mask = np.ones_like(a)
+        mask[:int(mask.shape[0] * 0.05), :] = 0
+        mask[-int(mask.shape[0] * 0.05):, :] = 0
+        mask[:, :int(mask.shape[1] * 0.05)] = 0
+        mask[:, -int(mask.shape[1] * 0.05):] = 0
+
+        # Apply gaussian blur to the mask
+        mask = np.
 
         # Pad the images by half of the image size
-        a = np.pad(a, np.max(a.shape) // 4)
-        b = np.pad(b, np.max(b.shape) // 4)
-        mask = np.pad(a_mask, np.max(a_mask.shape) // 4)
+        a = np.pad(a, np.max(a.shape) // 2)
+        b = np.pad(b, np.max(b.shape) // 2)
+        mask = np.pad(a_mask, np.max(a_mask.shape) // 2)
         print(f"  > Fan transformation and padding took {time.time() - start} seconds")
 
         # plt.imsave(os.path.join(out, f"frame_{a_id:08}.png"), a, cmap="gray")
@@ -79,5 +92,3 @@ if __name__ == '__main__':
         plt.imsave(os.path.join(out, f"combined_{b_id:08}.png"), combined, cmap="gray")
 
         a_id, a_raw, _, a_aperture, a_ts = b_id, b_raw, _, b_aperture, b_ts
-
-        print(f"  > Total time for frame {b_id}: {time.time() - start_time} seconds")
