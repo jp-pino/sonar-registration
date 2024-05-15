@@ -83,7 +83,6 @@ class PaddingModule(PipelineModule):
     def __init__(self, padding_ratio):
         super().__init__()
         self.padding_ratio = padding_ratio
-        self.center = None
 
     @staticmethod
     @ray.remote
@@ -188,7 +187,7 @@ class LogPolarModule(PipelineModule):
 
 
 class PhaseCorrelationModule(PipelineModule):
-    def __init__(self, upsample_factor=10, mode='rotation', force_scale=True, invert=False):
+    def __init__(self, upsample_factor=10, mode='rotation', normalization=None, force_scale=True, invert=False):
         super().__init__()
         if mode not in ['rotation', 'translation']:
             raise ValueError("mode must be either 'rotation' or 'translation'")
@@ -196,6 +195,7 @@ class PhaseCorrelationModule(PipelineModule):
         self.mode = mode
         self.force_scale = force_scale
         self.invert = invert
+        self.normalization = normalization
 
     def run(self, a, b, mask, tform):
         if a is None or b is None:
@@ -204,8 +204,9 @@ class PhaseCorrelationModule(PipelineModule):
         center = np.array(a.shape) // 2
 
         shifts, error, phasediff = phase_cross_correlation(
-            a, b, upsample_factor=self.upsample_factor, normalization=None, disambiguate=False
+            a, b, upsample_factor=self.upsample_factor, normalization=self.normalization, disambiguate=False
         )
+        print(f"    > Shifts: {shifts}, Error: {error}, Phasediff: {phasediff}")
 
         if self.mode == 'rotation':
             angle = shifts[0] * 360 / a.shape[0]
@@ -263,12 +264,6 @@ class WarpModule(PipelineModule):
         top = int(np.abs(min_y)) if min_y < 0 else 0
         bottom = int(max_y - self.pipeline.combined.shape[0] - 1) if max_y >= self.pipeline.combined.shape[0] else 0
 
-        # if left > 0 or right > 0 or top > 0 or bottom > 0:
-        self.pipeline.padding_left += left
-        self.pipeline.padding_right += right
-        self.pipeline.padding_top += top
-        self.pipeline.padding_bottom += bottom
-
         # Update centering transform
         self.pipeline.centering_tform += SimilarityTransform(translation=(-left, -top))
 
@@ -295,5 +290,13 @@ class WarpModule(PipelineModule):
 
 class UpdateTformModule(PipelineModule):
     def run(self, a, b, mask, tform):
+        origin = self.pipeline.total_tform(np.array([[0, 0]]))
         self.pipeline.total_tform += tform
+        # print(f"    > Translation: {tform.translation}, Rotation: {tform.rotation}, Scale: {tform.scale}")
+        # distance_error = 150
+        # for i, (t, o) in zip(range(len(self.pipeline.tforms)), self.pipeline.tforms):
+        #     distance = np.linalg.norm(origin - o)
+        #     if distance < distance_error:
+        #         print(f"    > Found neighbor tform with distance {distance}")
+        # self.pipeline.tforms.append((i, j, tform, origin))
         return a, b, mask, tform

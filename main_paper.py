@@ -51,7 +51,7 @@ if __name__ == '__main__':
     pipeline.add_module(PaddingModule(4))
     pipeline.add_module(MaskModule())
     pipeline.add_module(WarpModule(), apply_to=('b', 'm'))
-    pipeline.add_module(PhaseCorrelationModule(10, 'translation'))
+    pipeline.add_module(PhaseCorrelationModule(10, 'translation', normalization='phase'))
     pipeline.add_module(UpdateTformModule())
     pipeline.add_module(WarpModule(combine=True), ('b', 'm'), input_stage=PaddingModule.__name__)
 

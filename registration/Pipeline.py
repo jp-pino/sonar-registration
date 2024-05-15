@@ -11,8 +11,9 @@ from skimage.transform import (
 )
 
 
-class Pipeline:
+class Pipeline(PipelineModule):
     def __init__(self):
+        super().__init__()
         self.modules = []
         self.outputs = {}
         self.source_imgs = []
@@ -21,21 +22,23 @@ class Pipeline:
         self.centering_tform = SimilarityTransform()
         self.combined = None
         self.combined_count = 0
-        self.padding_top = 0
-        self.padding_bottom = 0
-        self.padding_left = 0
-        self.padding_right = 0
 
     def add_module(self, module: PipelineModule, apply_to=('a', 'b', 'm'), input_stage='chain', output=None):
-        print(f"Adding module {module.__class__.__name__} with apply_to={apply_to} and input_stage={input_stage}")
+        name = f"{module.__class__.__name__}__{len(self.modules)}"
+
+        print(f"Adding module {name} with apply_to={apply_to} and input_stage={input_stage}")
         for a in apply_to:
             if a not in ['a', 'b', 'm']:
                 raise ValueError(f"Invalid value for apply_to: {a}")
+
         if (input_stage not in ['chain', 'source']
-                and input_stage not in [m.__class__.__name__ for m, _, _, _ in self.modules]):
+                and input_stage not in [m.name for m, _, _, _ in self.modules]):
             raise ValueError(f"Invalid value for input_stage: {input_stage}")
+
         module.set_pipeline(self)
+        module.set_name(name)
         self.modules.append((module, apply_to, input_stage, output))
+        return name
 
     def get_modules(self, class_name):
         modules = []
@@ -47,11 +50,17 @@ class Pipeline:
     def get_global_tform(self):
         return self.centering_tform + self.total_tform
 
-    def run(self, a: np.ndarray, b: np.ndarray):
-        start_time = time.time()
-        source_imgs = [a.copy(), b.copy()]
+    def execute(self, a: np.ndarray, b: np.ndarray):
         mask = np.ones_like(a)
         tform = SimilarityTransform()
+
+        a, b, mask, tform = self.run(a, b, mask, tform)
+
+        return a, b, mask, tform, self.total_tform
+
+    def run(self, a, b, mask, tform):
+        start_time = time.time()
+        source_imgs = [a.copy(), b.copy()]
         self.outputs['source'] = self.outputs['chain'] = (source_imgs[0], source_imgs[1], mask)
         for module, apply_to, input_stage, output in self.modules:
             start = time.time()
@@ -68,23 +77,23 @@ class Pipeline:
             b = b_tmp if 'b' in apply_to else b
             mask = mask_tmp if 'm' in apply_to else mask
 
-            self.outputs[module.__class__.__name__] = self.outputs['chain'] = (a.copy(), b.copy(), mask.copy())
+            self.outputs[module.name] = self.outputs['chain'] = (a.copy(), b.copy(), mask.copy())
 
             if output is not None:
                 if 'a' in apply_to:
-                    plt.imsave(os.path.join(output, f"{start_time}_{start}_a_{module.__class__.__name__}.png"), a,
+                    plt.imsave(os.path.join(output, f"{start_time}_{start}_a_{module.name}.png"), a,
                                cmap="gray")
                 if 'b' in apply_to:
-                    plt.imsave(os.path.join(output, f"{start_time}_{start}_b_{module.__class__.__name__}.png"), b,
+                    plt.imsave(os.path.join(output, f"{start_time}_{start}_b_{module.name}.png"), b,
                                cmap="gray")
                 if 'm' in apply_to:
-                    plt.imsave(os.path.join(output, f"{start_time}_{start}_mask_{module.__class__.__name__}.png"), mask,
+                    plt.imsave(os.path.join(output, f"{start_time}_{start}_mask_{module.name}.png"), mask,
                                cmap="gray")
 
             total_time = time.time() - start
             color = Fore.RED if total_time > 0.2 else Fore.GREEN
-            print(f"{color}  > Module {module.__class__.__name__} took {total_time} seconds{Style.RESET_ALL}")
+            print(f"{color}  > Module {module.name} took {total_time} seconds{Style.RESET_ALL}")
 
         print(f"  > Total time for pipeline: {time.time() - start_time} seconds")
 
-        return a, b, mask, tform, self.total_tform
+        return a, b, mask, tform
