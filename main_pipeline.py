@@ -25,29 +25,35 @@ if __name__ == '__main__':
     a_id, a_raw, _, a_aperture, a_ts = next(generator)
 
     pipeline = Pipeline()
+    pipeline.add_module(ResizeModule(90000))
     pipeline.add_module(FanModule(a_aperture))
     pipeline.add_module(PaddingModule(4))
     pipeline.add_module(BandpassModule(5, 20))
-    pipeline.add_module(MaskModule())
+    pipeline.add_module(MaskModule(padding=50))
     pipeline.add_module(FourierModule())
-    pipeline.add_module(LogPolarModule())
+    pipeline.add_module(LogPolarModule(order=1))
     pipeline.add_module(PhaseCorrelationModule(10, 'rotation'))
-    pipeline.add_module(WarpModule(), apply_to='b', input_stage=MaskModule.__name__)
-    pipeline.add_module(IdentityModule(), 'a', input_stage=MaskModule.__name__)
+    pipeline.add_module(WarpModule(), apply_to=('b', 'm'), input_stage=MaskModule.__name__)
+    pipeline.add_module(IdentityModule(), ('a'), input_stage=MaskModule.__name__)
     pipeline.add_module(PhaseCorrelationModule(10, 'translation'))
-    pipeline.add_module(IdentityModule(), 'a', input_stage=PaddingModule.__name__)
+    pipeline.add_module(IdentityModule(), ('a'), input_stage=PaddingModule.__name__)
     pipeline.add_module(UpdateTformModule())
-    pipeline.add_module(WarpModule(combine=True), 'b', input_stage=PaddingModule.__name__)
+    pipeline.add_module(WarpModule(combine=True), ('b'), input_stage=PaddingModule.__name__)
 
-    combined = None
+    count = 0
     while True:
         b_id, b_raw, _, b_aperture, b_ts = next(generator)
 
         print(f"Processing pings {a_id} and {b_id}")
         a, b, mask, tform, total_tform = pipeline.run(a_raw, b_raw)
-        plt.imsave(os.path.join(out, f"combined_{b_id:08}.png"), pipeline.combined, cmap="gray")
-        plt.imsave(os.path.join(out, f"frame_{b_id:08}.png"), b, cmap="gray")
+        if count % 10 == 0:
+            plt.imsave(os.path.join(out, f"combined_{b_id:08}.png"), pipeline.combined, cmap="gray")
+            # plt.imsave(os.path.join(out, f"mask_{b_id:08}.png"), mask, cmap="gray")
+            # plt.imsave(os.path.join(out, f"a_{b_id:08}.png"), a, cmap="gray")
+            # plt.imsave(os.path.join(out, f"b_{b_id:08}.png"), b, cmap="gray")
 
-
+        print(f"A size: {a_raw.shape}, B size: {b_raw.shape}")
+        print(f"Combined size: {pipeline.combined.shape}")
+        count += 1
         a_id, a_raw, _, a_aperture, a_ts = b_id, b_raw, _, b_aperture, b_ts
 
