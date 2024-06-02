@@ -3,7 +3,7 @@ import sys
 
 from matplotlib import pyplot as plt
 
-from registration.Pipeline import Pipeline
+from pipeline.Pipeline import Pipeline
 from registration.Modules import *
 
 from utils import binlog

@@ -1,11 +1,10 @@
 import ray
 
-from registration.PipelineModule import PipelineModule
-from registration.Pipeline import Pipeline
+from pipeline.PipelineModule import PipelineModule
 
 from utils import image
 
-from colorama import Fore, Back, Style
+from colorama import Fore, Style
 import numpy as np
 
 from scipy.ndimage import gaussian_filter
@@ -212,7 +211,7 @@ class PhaseCorrelationModule(PipelineModule):
             angle = shifts[0] * 360 / a.shape[0]
             if self.invert:
                 angle = -angle
-            radius = self.pipeline.get_modules(LogPolarModule.__name__)[0].radius
+            radius = self.find_root().get_module_by_type(LogPolarModule.__name__)[0].radius
             klog = a.shape[1] / np.log(radius)
             print(f"    > Radius: {radius}")
             scale = np.exp(shifts[1] / klog)
@@ -236,13 +235,13 @@ class WarpModule(PipelineModule):
         self.use_total_transform = use_total_transform
 
     def run(self, a, b, mask, tform):
-        if self.pipeline.combined is None:
-            self.pipeline.combined = np.zeros_like(a if a is not None else b)
+        if self.find_root().combined is None:
+            self.find_root().combined = np.zeros_like(a if a is not None else b)
 
         if self.combine:
             b = self.pad_and_combine(b, mask) if b is not None else None
         else:
-            t = self.pipeline.total_tform if self.use_total_transform else tform
+            t = self.find_root().total_tform if self.use_total_transform else tform
             a = warp(a, t, output_shape=a.shape) if a is not None else None
             b = warp(b, t.inverse, output_shape=b.shape) if b is not None else None
 
@@ -252,7 +251,7 @@ class WarpModule(PipelineModule):
         # Find necessary padding for combining warped image
         margin = np.max(img.shape) // 5
         source_corners = np.array([[margin, margin], [margin, img.shape[0] - margin], [img.shape[1] - margin, img.shape[0] - margin], [img.shape[1] - margin, margin]])
-        corners = (self.pipeline.centering_tform.inverse + self.pipeline.total_tform)(source_corners)
+        corners = (self.find_root().centering_tform.inverse + self.find_root().total_tform)(source_corners)
 
         max_x = np.max(corners[:, 0])
         max_y = np.max(corners[:, 1])
@@ -260,43 +259,29 @@ class WarpModule(PipelineModule):
         min_y = np.min(corners[:, 1])
 
         left = int(np.abs(min_x)) if min_x < 0 else 0
-        right = int(max_x - self.pipeline.combined.shape[1] - 1) if max_x >= self.pipeline.combined.shape[1] else 0
+        right = int(max_x - self.find_root().combined.shape[1] - 1) if max_x >= self.find_root().combined.shape[1] else 0
         top = int(np.abs(min_y)) if min_y < 0 else 0
-        bottom = int(max_y - self.pipeline.combined.shape[0] - 1) if max_y >= self.pipeline.combined.shape[0] else 0
+        bottom = int(max_y - self.find_root().combined.shape[0] - 1) if max_y >= self.find_root().combined.shape[0] else 0
 
         # Update centering transform
-        self.pipeline.centering_tform += SimilarityTransform(translation=(-left, -top))
+        self.find_root().centering_tform += SimilarityTransform(translation=(-left, -top))
 
         # Pad combined image to fit new corners
-        self.pipeline.combined = np.pad(self.pipeline.combined, ((top, bottom), (left, right)),
+        self.find_root().combined = np.pad(self.find_root().combined, ((top, bottom), (left, right)),
                                         mode='constant', constant_values=0)
 
         print(f"    > Image size: {img.shape}, Mask size: {mask.shape}")
         img[mask != 1] = np.nan
-        img = warp(img, (self.pipeline.centering_tform + self.pipeline.total_tform.inverse), output_shape=self.pipeline.combined.shape)
-        # w_a = 1.0 * self.pipeline.combined_count / (self.pipeline.combined_count + 1)
-        # w_b = 1.0 / (self.pipeline.combined_count + 1)
+        img = warp(img, (self.find_root().centering_tform + self.find_root().total_tform.inverse), output_shape=self.find_root().combined.shape)
+        # w_a = 1.0 * self.find_root().combined_count / (self.find_root().combined_count + 1)
+        # w_b = 1.0 / (self.find_root().combined_count + 1)
         # print(f"    > Combining with weights {w_a} and {w_b}")
-        # self.pipeline.combined = np.nanmean(np.dstack((self.pipeline.combined * w_a, img * w_b)), axis=2)
-        # self.pipeline.combined = np.nanmean(np.dstack((self.pipeline.combined, img)), axis=2)
-        self.pipeline.combined = np.nansum(np.dstack((self.pipeline.combined * (self.pipeline.combined_count / (self.pipeline.combined_count + 1)), (img / (self.pipeline.combined_count + 1)))), 2)
+        # self.find_root().combined = np.nanmean(np.dstack((self.find_root().combined * w_a, img * w_b)), axis=2)
+        # self.find_root().combined = np.nanmean(np.dstack((self.find_root().combined, img)), axis=2)
+        self.find_root().combined = np.nansum(np.dstack((self.find_root().combined * (self.find_root().combined_count / (self.find_root().combined_count + 1)), (img / (self.find_root().combined_count + 1)))), 2)
 
-        self.pipeline.combined_count += 1
-        # self.pipeline.combined = np.maximum(self.pipeline.combined, img)
-        self.pipeline.combined[np.isnan(self.pipeline.combined)] = 0
+        self.find_root().combined_count += 1
+        # self.find_root().combined = np.maximum(self.find_root().combined, img)
+        self.find_root().combined[np.isnan(self.find_root().combined)] = 0
         img[np.isnan(img)] = 0
         return img
-
-
-class UpdateTformModule(PipelineModule):
-    def run(self, a, b, mask, tform):
-        origin = self.pipeline.total_tform(np.array([[0, 0]]))
-        self.pipeline.total_tform += tform
-        # print(f"    > Translation: {tform.translation}, Rotation: {tform.rotation}, Scale: {tform.scale}")
-        # distance_error = 150
-        # for i, (t, o) in zip(range(len(self.pipeline.tforms)), self.pipeline.tforms):
-        #     distance = np.linalg.norm(origin - o)
-        #     if distance < distance_error:
-        #         print(f"    > Found neighbor tform with distance {distance}")
-        # self.pipeline.tforms.append((i, j, tform, origin))
-        return a, b, mask, tform

@@ -36,16 +36,18 @@ def read_ping(file_path, start_frame=0, max_frames=None):
         data_array = np.frombuffer(ping.ping_data, dtype=np.uint8)
 
         # Reshape the array into a 2D array
-        image_array = data_array.reshape(
-            ping.number_of_ranges, ping.number_of_beams + 4
+        data = data_array.reshape(
+            ping.number_of_ranges, ping.number_of_beams + (4 if ping.has_gains else 0)
         )
 
         # Separate gain (first 4 bytes) and data
-        gain = np.sqrt(image_array[:, :4].view(np.uint32))
-        data = image_array[:, 4:]
+        gain = None
+        if ping.has_gains:
+            gain = np.sqrt(data[:, :4].view(np.uint32))
+            data = data[:, 4:]
 
         # Calculate the aperture
-        aperture = (ping.bearings[-1] - ping.bearings[0]) / 100.0
+        aperture = (np.max(ping.bearings) - np.min(ping.bearings)) / 100.0
 
         n_frames += 1
         yield ping.ping_id, data, gain, aperture, ts
