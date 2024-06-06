@@ -19,8 +19,8 @@ from skimage.transform import (
 
 
 class IdentityModule(PipelineModule):
-    def run(self, a, b, mask, tform):
-        return a, b, mask, tform
+    def run(self, a, b, mask, tform, error):
+        return a, b, mask, tform, error
 
 
 class ResizeModule(PipelineModule):
@@ -44,12 +44,12 @@ class ResizeModule(PipelineModule):
         img = resize(img.copy(), (int(img.shape[0] * ratio), int(img.shape[1] * ratio)), anti_aliasing=True)
         return img
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         a = self.resize.remote(a, self.size)
         b = self.resize.remote(b, self.size)
         mask = self.resize.remote(mask, self.size)
 
-        return ray.get(a), ray.get(b), ray.get(mask), tform
+        return ray.get(a), ray.get(b), ray.get(mask), tform, error
 
 
 class FanModule(PipelineModule):
@@ -66,7 +66,7 @@ class FanModule(PipelineModule):
         mask = np.interp(mask, (mask.min(), mask.max()), (0, 1))
         return data * mask, mask
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         a = self.get_masked_fan.remote(a, self.aperture)
         b = self.get_masked_fan.remote(b, self.aperture)
         mask = self.get_masked_fan.remote(mask, self.aperture)
@@ -75,7 +75,7 @@ class FanModule(PipelineModule):
         b, _ = ray.get(b)
         mask, _ = ray.get(mask)
 
-        return a, b, mask, tform
+        return a, b, mask, tform, error
 
 
 class PaddingModule(PipelineModule):
@@ -90,13 +90,13 @@ class PaddingModule(PipelineModule):
             return None
         return np.pad(data, pad_size, mode='constant', constant_values=0)
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         pad_size = np.max(a.shape) // self.padding_ratio
         a = self.pad.remote(a, pad_size)
         b = self.pad.remote(b, pad_size)
         mask = self.pad.remote(mask, pad_size)
 
-        return ray.get(a), ray.get(b), ray.get(mask), tform
+        return ray.get(a), ray.get(b), ray.get(mask), tform, error
 
 
 class BandpassModule(PipelineModule):
@@ -112,10 +112,10 @@ class BandpassModule(PipelineModule):
             return None
         return difference_of_gaussians(data, low_cutoff, high_cutoff)
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         a = self.bandpass.remote(a, self.low_cutoff, self.high_cutoff)
         b = self.bandpass.remote(b, self.low_cutoff, self.high_cutoff)
-        return ray.get(a), ray.get(b), mask, tform
+        return ray.get(a), ray.get(b), mask, tform, error
 
 
 class MaskModule(PipelineModule):
@@ -132,7 +132,7 @@ class MaskModule(PipelineModule):
             return None
         return data * mask
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         if self.mask is None:
             self.mask = np.pad(mask, self.padding, mode='constant', constant_values=0)
             # Resize mask to image size
@@ -143,7 +143,7 @@ class MaskModule(PipelineModule):
         a = self.apply_mask.remote(a, self.mask)
         b = self.apply_mask.remote(b, self.mask)
 
-        return ray.get(a), ray.get(b), mask, tform
+        return ray.get(a), ray.get(b), mask, tform, error
 
 
 class FourierModule(PipelineModule):
@@ -154,11 +154,11 @@ class FourierModule(PipelineModule):
             return None
         return np.abs(np.fft.fftshift(np.fft.fft2(data)))
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         a = self.fft.remote(a)
         b = self.fft.remote(b)
 
-        return ray.get(a), ray.get(b), mask, tform
+        return ray.get(a), ray.get(b), mask, tform, error
 
 
 class LogPolarModule(PipelineModule):
@@ -176,13 +176,13 @@ class LogPolarModule(PipelineModule):
         self.order = order
         self.radius = None
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         self.radius = a.shape[0] // self.radius_factor
 
         a = self.log_polar_transform.remote(a, self.radius, self.order)
         b = self.log_polar_transform.remote(b, self.radius, self.order)
 
-        return ray.get(a), ray.get(b), mask, tform
+        return ray.get(a), ray.get(b), mask, tform, error
 
 
 class PhaseCorrelationModule(PipelineModule):
@@ -196,7 +196,7 @@ class PhaseCorrelationModule(PipelineModule):
         self.invert = invert
         self.normalization = normalization
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         if a is None or b is None:
             raise ValueError("Both images must be provided")
 
@@ -225,7 +225,7 @@ class PhaseCorrelationModule(PipelineModule):
             tform += SimilarityTransform(translation=[shifts[1], shifts[0]])
             print(f"    > Translation: {shifts}")
 
-        return a, b, mask, tform
+        return a, b, mask, tform, error
 
 
 class WarpModule(PipelineModule):
@@ -234,7 +234,7 @@ class WarpModule(PipelineModule):
         self.combine = combine
         self.use_total_transform = use_total_transform
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         if self.find_root().combined is None:
             self.find_root().combined = np.zeros_like(a if a is not None else b)
 
@@ -245,7 +245,7 @@ class WarpModule(PipelineModule):
             a = warp(a, t, output_shape=a.shape) if a is not None else None
             b = warp(b, t.inverse, output_shape=b.shape) if b is not None else None
 
-        return a, b, mask, tform
+        return a, b, mask, tform, error
 
     def pad_and_combine(self, img, mask):
         # Find necessary padding for combining warped image

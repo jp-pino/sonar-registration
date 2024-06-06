@@ -16,12 +16,13 @@ if __name__ == '__main__':
     path = sys.argv[1] if len(sys.argv) > 1 else "./logs/log-multibeam.bez"
     out = sys.argv[2] if len(sys.argv) > 2 else "./out"
     start_frame = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+    end_frame = int(sys.argv[4]) if len(sys.argv) > 4 else None
 
     # make sure the output directory exists
     os.makedirs(out, exist_ok=True)
 
     # Open generator
-    generator = binlog.read_ping(path, start_frame=start_frame)
+    generator = binlog.read_ping(path, start_frame=start_frame, max_frames=end_frame)
 
     # Read the first ping
     a_id, a_raw, _, a_aperture, a_ts = next(generator)
@@ -30,9 +31,12 @@ if __name__ == '__main__':
     conditioning_id, conditioning = pipeline.add_module(Pipeline('conditioning'))
     filtering_id, filtering = pipeline.add_module(Pipeline('filtering'))
     registration_id, registration = pipeline.add_module(Pipeline('registration'))
+    alignment_id, alignment = pipeline.add_module(Pipeline('global_alignment'))
 
     pipeline.add_module(IdentityModule(), ('a', 'b'), input_stage=conditioning_id)
     pipeline.add_module(WarpModule(combine=True), 'b')
+
+
 
     conditioning.add_module(ResizeModule(90000))
     conditioning.add_module(FanModule(a_aperture))
@@ -47,23 +51,38 @@ if __name__ == '__main__':
     registration.add_module(IdentityModule(), input_stage=filtering_id)
     registration.add_module(WarpModule(), apply_to=('b', 'm'))
     registration.add_module(PhaseCorrelationModule(10, 'translation'))
-    registration.add_module(UpdateTformModule())
+
+    alignment.add_module(UpdateTformModule())
+    alignment.add_module(FindNeighborsModule(registration_id), input_stage=filtering_id)
+    alignment.add_module(IdentityModule(), input_stage=registration_id)
 
     count = 0
     while True:
-        b_id, b_raw, _, b_aperture, b_ts = next(generator)
+        try:
+            b_id, b_raw, _, b_aperture, b_ts = next(generator)
+        except StopIteration as e:
+            print("End of file")
+            break
 
         print(f"Processing pings {a_id} and {b_id}")
-        a, b, mask, tform, total_tform = pipeline.execute(a_raw, b_raw)
-        if count % 30 == 0:
+        a, b, mask, tform, error, total_tform = pipeline.execute(a_raw, b_raw)
+        if count % 100 == 0:
             plt.imsave(os.path.join(out, f"combined_{b_id:08}.png"), pipeline.combined, cmap="gray")
-            # plt.imsave(os.path.join(out, f"mask_{b_id:08}.png"), mask, cmap="gray")
-            # plt.imsave(os.path.join(out, f"a_{b_id:08}.png"), a, cmap="gray")
-            # plt.imsave(os.path.join(out, f"b_{b_id:08}.png"), b, cmap="gray")
-            fig = plot_slam2d(pipeline.pose_graph.optimizer, "Before optimisation")
-            fig.write_image(os.path.join(out, f"graph_{b_id:08}.png"))
 
         print(f"A size: {a_raw.shape}, B size: {b_raw.shape}")
         print(f"Combined size: {pipeline.combined.shape}")
         count += 1
         a_id, a_raw, _, a_aperture, a_ts = b_id, b_raw, _, b_aperture, b_ts
+
+    plt.imsave(os.path.join(out, f"combined.png"), pipeline.combined, cmap="gray")
+    fig = plot_slam2d(pipeline.pose_graph.optimizer, "Before optimisation")
+    fig.write_image(os.path.join(out, f"b_graph.png"))
+
+    realignment = Pipeline()
+    realignment.add_module(WarpModule(combine=True), 'b')
+
+    pipeline.optimize(realignment, filtering_id, 5000, verbose=True)
+    plt.imsave(os.path.join(out, f"realigned.png"), pipeline.combined, cmap="gray")
+
+    fig = plot_slam2d(pipeline.pose_graph.optimizer, "After optimisation")
+    fig.write_image(os.path.join(out, f"a_graph.png"))

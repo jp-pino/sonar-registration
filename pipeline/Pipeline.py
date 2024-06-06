@@ -20,12 +20,10 @@ class Pipeline(PipelineModule):
 
         self.modules = []
         self.outputs = {}
-        self.source_imgs = []
+        self.source_cache = []
 
-        self.images = []
         self.total_tform = SimilarityTransform()
         self.centering_tform = SimilarityTransform()
-        self.tforms = [SimilarityTransform()]
         self.combined = None
         self.combined_count = 0
 
@@ -48,6 +46,13 @@ class Pipeline(PipelineModule):
         module.name = name
         self.modules.append((module, apply_to, input_stage, output))
         return name, module
+
+    def remove_module(self, name):
+        for i, (module, _, _, _) in enumerate(self.modules):
+            if module.name == name:
+                print(f"Removing module {name}")
+                self.modules.pop(i)
+                return
 
     def get_module(self, name):
         for module, _, _, _ in self.modules:
@@ -79,15 +84,18 @@ class Pipeline(PipelineModule):
     def execute(self, a: np.ndarray, b: np.ndarray):
         mask = np.ones_like(a)
         tform = SimilarityTransform()
+        error = None
 
-        a, b, mask, tform = self.run(a, b, mask, tform)
+        a, b, mask, tform, error = self.run(a, b, mask, tform, error)
 
-        return a, b, mask, tform, self.total_tform
+        return a, b, mask, tform, error, self.total_tform
 
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         start_time = time.time()
-        source_imgs = [a.copy(), b.copy()]
-        self.find_root().outputs['source'] = self.find_root().outputs['chain'] = (source_imgs[0], source_imgs[1], mask)
+        self.source_cache.append((a.copy(), b.copy(), mask.copy()))
+        self.find_root().outputs['source'] \
+            = self.find_root().outputs['chain'] \
+            = (self.source_cache[-1][0], self.source_cache[-1][1], mask)
         for module, apply_to, input_stage, output in self.modules:
             start = time.time()
 
@@ -100,7 +108,7 @@ class Pipeline(PipelineModule):
             b_tmp = b_tmp.copy() if 'b' in apply_to else None
             mask_tmp = mask_tmp.copy() if 'm' in apply_to else mask.copy()
 
-            a_tmp, b_tmp, mask_tmp, tform = module.run(a_tmp, b_tmp, mask_tmp, tform)
+            a_tmp, b_tmp, mask_tmp, tform, error = module.run(a_tmp, b_tmp, mask_tmp, tform, error)
 
             a = a_tmp if 'a' in apply_to else a
             b = b_tmp if 'b' in apply_to else b
@@ -127,4 +135,39 @@ class Pipeline(PipelineModule):
 
         print(f"  > Total time for pipeline {self.name}: {time.time() - start_time} seconds")
 
-        return a, b, mask, tform
+        return a, b, mask, tform, error
+
+    def optimize(self, pipeline, input_id, iterations=10, verbose=False):
+        self.total_tform = self.centering_tform = SimilarityTransform()
+        self.combined = None
+        self.combined_count = 0
+        self.pose_graph.optimize(iterations, verbose=verbose)
+        pipeline_id, _ = self.add_module(pipeline)
+        error = None
+        for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
+            if vertex.id() == 0:
+                continue
+
+            x, y, theta = vertex.estimate().to_vector()
+            print(f"Vertex {vertex.id()} at {x}, {y}, {np.rad2deg(theta)}")
+
+            if vertex.id() >= len(self.get_module(input_id).source_cache):
+                continue
+
+            a, b, mask = self.get_module(input_id).source_cache[vertex.id() - 1]
+
+            # center = np.array(a.shape) // 2
+            # tform = SimilarityTransform()
+            # tform += SimilarityTransform(translation=-center)
+            # tform += SimilarityTransform(scale=1, rotation=theta)
+            # tform += SimilarityTransform(translation=center)
+            # tform += SimilarityTransform(translation=[x, y])
+            tform = SimilarityTransform(translation=[x, y], rotation=theta)
+            self.total_tform = tform
+
+            pipeline.run(a, b, mask, tform, error)
+
+        self.remove_module(pipeline_id)
+
+
+

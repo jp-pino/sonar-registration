@@ -54,6 +54,7 @@ def plot_slam2d(optimizer, title):
         go.Scatter(
             x=[v[0] for v in poses],
             y=[v[1] for v in poses],
+            text=[f"Angle: {v[2]}" for v in poses],
             mode="markers",
             marker_line_color="midnightblue", 
             marker_color="lightskyblue",
@@ -82,5 +83,6 @@ def plot_slam2d(optimizer, title):
         scaleratio=1,
     )
     fig.update_layout(go.Layout({"title": title}))
+    fig.update_yaxes(autorange="reversed")
 
     return fig

@@ -13,7 +13,7 @@ class PipelineModule(ABC):
         print(f"Creating module {self.__class__.__name__}")
 
     @abstractmethod
-    def run(self, a, b, mask, tform):
+    def run(self, a, b, mask, tform, error):
         pass
 
     def find_root(self):
