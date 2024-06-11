@@ -14,7 +14,7 @@ from skimage.transform import (
 
 
 class Pipeline(PipelineModule):
-    def __init__(self, name=__name__):
+    def __init__(self, name=__name__, verbose=False):
         super().__init__()
         self.name = name
 
@@ -27,11 +27,12 @@ class Pipeline(PipelineModule):
         self.combined = None
         self.combined_count = 0
 
-        self.pose_graph = PoseGraph()
+        self.verbose = verbose
+        self.pose_graph = PoseGraph(verbose=verbose)
         self.pose_graph.add_fixed_pose(g2o.SE2())
 
     def add_module(self, module: PipelineModule, apply_to=('a', 'b', 'm'), input_stage='chain', output=None):
-        name = f"{module.name}__{len(self.modules)}"
+        name = f"{self.name}_{module.name}__{len(self.modules)}"
 
         print(f"Adding module {name} with apply_to={apply_to} and input_stage={input_stage}")
         for a in apply_to:
@@ -40,6 +41,8 @@ class Pipeline(PipelineModule):
 
         if (input_stage not in ['chain', 'source']
                 and self.find_root().get_module(input_stage) is None):
+            for module, _, _, _ in self.modules:
+                print(f"  > {module.name}")
             raise ValueError(f"Invalid value for input_stage: {input_stage}")
 
         module.pipeline = self
@@ -79,7 +82,7 @@ class Pipeline(PipelineModule):
         return modules
 
     def get_global_tform(self):
-        return self.centering_tform + self.total_tform
+        return self.centering_tform + self.total_tform.inverse
 
     def execute(self, a: np.ndarray, b: np.ndarray):
         mask = np.ones_like(a)
@@ -137,22 +140,21 @@ class Pipeline(PipelineModule):
 
         return a, b, mask, tform, error
 
-    def optimize(self, pipeline, input_id, iterations=10, verbose=False):
+    def redraw(self, pipeline, input_id):
         self.total_tform = self.centering_tform = SimilarityTransform()
         self.combined = None
         self.combined_count = 0
-        self.pose_graph.optimize(iterations, verbose=verbose)
         pipeline_id, _ = self.add_module(pipeline)
         error = None
         for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
             if vertex.id() == 0:
                 continue
 
-            x, y, theta = vertex.estimate().to_vector()
-            print(f"Vertex {vertex.id()} at {x}, {y}, {np.rad2deg(theta)}")
-
             if vertex.id() >= len(self.get_module(input_id).source_cache):
                 continue
+
+            x, y, theta = vertex.estimate().to_vector()
+            print(f"Vertex {vertex.id()} at {x}, {y}, {np.rad2deg(theta)}")
 
             a, b, mask = self.get_module(input_id).source_cache[vertex.id() - 1]
 
@@ -168,6 +170,18 @@ class Pipeline(PipelineModule):
             pipeline.run(a, b, mask, tform, error)
 
         self.remove_module(pipeline_id)
+
+    def optimize(self, iterations=10, verbose=False):
+        for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
+            print(f"Vertex {vertex.id()} at {vertex.estimate().to_vector()}")
+        for edge in self.pose_graph.optimizer.edges():
+            print(f"Edge {edge.id()} at {edge.measurement().to_vector()}")
+        self.total_tform = self.centering_tform = SimilarityTransform()
+        self.pose_graph.optimize(iterations, verbose=verbose)
+        for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
+            print(f"Realigned Vertex {vertex.id()} at {vertex.estimate().to_vector()}")
+        for edge in self.pose_graph.optimizer.edges():
+            print(f"Realigned Edge {edge.id()} at {edge.measurement().to_vector()}")
 
 
 

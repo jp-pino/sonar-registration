@@ -32,12 +32,6 @@ class PoseGraph:
         '''
         return self.optimizer.vertex(id)
 
-    def edge(self, id):
-        '''
-        Get edge by id
-        '''
-        return self.optimizer.edge(id)
-
     def add_fixed_pose(self, pose, vertex_id=None):
         '''
         Add fixed pose to the graph
@@ -47,7 +41,7 @@ class PoseGraph:
             vertex_id = self.vertex_count
         v_se2.set_id(vertex_id)
         if self.verbose:
-            print("Adding fixed pose vertex with ID", vertex_id)
+            print("    > PoseGraph: Adding fixed pose vertex with ID", vertex_id)
         v_se2.set_estimate(pose)
         v_se2.set_fixed(True)
         self.optimizer.add_vertex(v_se2)
@@ -65,15 +59,18 @@ class PoseGraph:
             self.last_id = [v for v in vertices if type(vertices[v]) == g2o.VertexSE2][0]
         v_se2 = g2o.VertexSE2()
         if self.verbose:
-            print("Adding pose vertex", self.vertex_count)
+            print("    > PoseGraph: Adding pose vertex", self.vertex_count)
         v_se2.set_id(self.vertex_count)
         pose = g2o.SE2(northings, eastings, heading)
+        if self.verbose:
+            print(f"    > PoseGraph: Adding odometry with pose: {pose.to_vector()}")
         if invert:
             pose = pose.inverse()
         v_se2.set_estimate(self.vertex_pose(self.last_id) * pose)
         self.optimizer.add_vertex(v_se2)
         # add edge
         e_se2 = g2o.EdgeSE2()
+        e_se2.set_id(self.edge_count)
         e_se2.set_vertex(0, self.vertex(self.last_id))
         e_se2.set_vertex(1, self.vertex(self.vertex_count))
         e_se2.set_measurement(pose)
@@ -83,7 +80,7 @@ class PoseGraph:
         self.vertex_count += 1
         self.edge_count += 1
         if self.verbose:
-            print("Adding SE2 edge between", self.last_id, id)
+            print("    > PoseGraph: Adding SE2 edge between", self.last_id, id)
         self.last_id = id
         return id
 
@@ -91,6 +88,7 @@ class PoseGraph:
         pose = g2o.SE2(northings, eastings, heading)
         # add edge
         e_se2 = g2o.EdgeSE2()
+        e_se2.set_id(self.edge_count)
         e_se2.set_vertex(0, self.vertex(id_start))
         e_se2.set_vertex(1, self.vertex(id_end))
         e_se2.set_measurement(pose)
@@ -104,7 +102,7 @@ class PoseGraph:
         x, y, theta = vertex.estimate().to_vector()
         # Find closes vertices
         for vertex_2 in self.optimizer.vertices().values():
-            if vertex.id() == vertex_2.id() and vertex_2.id() != vertex.id() - 1:
+            if vertex.id() == vertex_2.id() or vertex_2.id() == (vertex.id() - 1) or vertex_2.id() == 0:
                 continue
             test_x, test_y, test_theta = vertex_2.estimate().to_vector()
             if np.linalg.norm([x - test_x, y - test_y]) <= delta_pos:
