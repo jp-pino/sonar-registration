@@ -26,18 +26,45 @@ if __name__ == "__main__":
     os.makedirs(os.path.dirname(name), exist_ok=True)
 
     video = None
+    WIDTH = None
+    HEIGHT = None
+    RATIO = None
     frames = sorted(glob.glob(path), key=get_order)
+    print(f"Found {len(frames)} frames")
+
 
     for frame in frames:
         try:
             frame = cv2.imread(frame)
+
+            if WIDTH is None:
+                HEIGHT, WIDTH, _ = frame.shape
+                RATIO = HEIGHT / WIDTH
+
             height, width, layers = frame.shape
+
+            if width != WIDTH or height != HEIGHT:
+                # print(f"Resizing frame {frame.shape} to {WIDTH}x{HEIGHT}")
+                padding = height - width * RATIO
+                if padding >= 0:
+                    frame = cv2.copyMakeBorder(frame, 0, 0, int(padding // 2), int(padding // 2), cv2.BORDER_CONSTANT,
+                                               value=[0, 0, 0])
+                else:
+                    padding = width - height / RATIO
+                    frame = cv2.copyMakeBorder(frame, int(padding // 2), int(padding // 2), 0, 0, cv2.BORDER_CONSTANT,
+                                               value=[0, 0, 0])
+
+
+
+                frame = cv2.resize(frame, (WIDTH, HEIGHT))
 
             if video is None:
                 print(f"Creating video with shape {width}x{height} at {fps} fps")
-                video = cv2.VideoWriter(name, 0x7634706d, fps, (width, height))
-
+                print(f"\033[s")
+                video = cv2.VideoWriter(name, 0x7634706d, fps, (WIDTH, HEIGHT))
             video.write(frame)
+
+            # print(f"\033[uProcessed frame {frame.shape} {frame.shape[1]}x{frame.shape[0]}")
         except Exception as e:
             print(f"Error processing frame {id}: {e}")
             break

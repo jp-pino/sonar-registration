@@ -1,4 +1,7 @@
+import os
+
 import ray
+from matplotlib import pyplot as plt
 
 from pipeline.PipelineModule import PipelineModule
 
@@ -17,6 +20,33 @@ from skimage.transform import (
     warp,
 )
 
+from skimage import metrics
+
+class MetricsModule(PipelineModule):
+    def __init__(self, output=None):
+        super().__init__()
+        self.psnr = []
+        self.ssim = []
+        self.output = output
+
+    def __del__(self):
+        if self.output is not None:
+            print(f"    > Saving metrics to {self.output}")
+            np.savetxt(os.path.join(self.output, "metrics.csv"), np.array([self.psnr, self.ssim]).T, delimiter=",")
+
+
+    def run(self, a, b, mask, tform, error):
+        gaussian_image = gaussian_filter(b, sigma=1)
+
+        self.psnr.append(metrics.peak_signal_noise_ratio(b, gaussian_image))
+        self.ssim.append(metrics.structural_similarity(b, gaussian_image, data_range=1))
+
+        # Print nupmy type of the image
+        print(f"    > PSNR: {self.psnr[-1]}")
+        print(f"    > SSIM: {self.ssim[-1]}")
+
+
+        return a, b, mask, tform, error
 
 class IdentityModule(PipelineModule):
     def run(self, a, b, mask, tform, error):
@@ -27,6 +57,7 @@ class ResizeModule(PipelineModule):
     def __init__(self, size):
         super().__init__()
         self.size = size
+        self.init_origin = False
 
     @staticmethod
     @ray.remote
@@ -45,6 +76,12 @@ class ResizeModule(PipelineModule):
         return img
 
     def run(self, a, b, mask, tform, error):
+        if not self.init_origin:
+            total_size = a.shape[0] * a.shape[1]
+            ratio = self.size / total_size
+            self.find_root().origin = np.array(a.shape) * ratio
+            self.init_origin = True
+
         a = self.resize.remote(a, self.size)
         b = self.resize.remote(b, self.size)
         mask = self.resize.remote(mask, self.size)
@@ -53,35 +90,137 @@ class ResizeModule(PipelineModule):
 
 
 class FanModule(PipelineModule):
-    def __init__(self, aperture):
+    def __init__(self, fov):
         super().__init__()
-        self.aperture = aperture
+        self.fov = fov
+        self.init_origin = False
 
     @staticmethod
     @ray.remote
-    def get_masked_fan(raw, aperture):
+    def get_masked_fan(raw, fov):
         if raw is None:
             return None, None
-        data, mask = image.extract_data_and_mask(image.to_fan(raw, aperture))
+        data, mask = image.extract_data_and_mask(image.to_fan(raw, fov))
         mask = np.interp(mask, (mask.min(), mask.max()), (0, 1))
         return data * mask, mask
 
     def run(self, a, b, mask, tform, error):
-        a = self.get_masked_fan.remote(a, self.aperture)
-        b = self.get_masked_fan.remote(b, self.aperture)
-        mask = self.get_masked_fan.remote(mask, self.aperture)
+        a = self.get_masked_fan.remote(a, self.fov)
+        b = self.get_masked_fan.remote(b, self.fov)
+        # mask = self.get_masked_fan.remote(mask, self.fov)
 
         a, _ = ray.get(a)
-        b, _ = ray.get(b)
-        mask, _ = ray.get(mask)
+        b, mask = ray.get(b)
+        # mask, _ = ray.get(mask)
+
+        if not self.init_origin:
+            self.find_root().origin[1] = a.shape[1] // 2
+            self.find_root().origin[0] = a.shape[0]
+            self.init_origin = True
 
         return a, b, mask, tform, error
 
+
+class FanModule2(PipelineModule):
+    def __init__(self, bearings, cache="cache"):
+        super().__init__()
+        self.bearings = bearings
+        self.mapping = None
+        self.FOV = None
+        self.HEIGHT = None
+        self.WIDTH = None
+        self.mask = None
+        self.cache = cache
+        self.init_origin = False
+
+        # Make sure cache directory exists
+        os.makedirs(self.cache, exist_ok=True)
+
+    @staticmethod
+    @ray.remote
+    def get_fan(raw, height, width, mapping):
+        if raw is None:
+            return None, None
+
+        fan = np.zeros((height, width))
+        for x in range(width):
+            for y in range(height):
+                r, beam_id = mapping[y, x]
+                try:
+                    if 0 < r < raw.shape[0] and 0 < beam_id < raw.shape[1]:
+                        fan[y, x] = raw[r, beam_id]
+                except Exception as e:
+                    print(f"beam: {beam_id}, r: {r} -> x: {x}, y: {y}")
+                    print(f"raw shape: {raw.shape}, fan shape: {fan.shape}")
+                    raise e
+
+        return fan
+
+
+    def get_bearing(self, theta, width):
+        index = np.argmin(np.abs(self.bearings - theta))
+        return int(index * width / len(self.bearings))
+
+    def run(self, a, b, mask, tform, error):
+        FOV = np.max(self.bearings) - np.min(self.bearings)
+        HEIGHT = a.shape[0]
+        WIDTH = int(2 * HEIGHT * np.sin(np.deg2rad(FOV / 2)))
+        mask = None
+
+        print(f"    > FOV: {FOV}, HEIGHT: {HEIGHT}, WIDTH: {WIDTH}, Number of bearings: {len(self.bearings)}, RAW Width: {a.shape[1]}, RAW Height: {a.shape[0]}")
+        if (self.mapping is None or FOV != self.FOV
+                or HEIGHT != self.HEIGHT
+                or WIDTH != self.WIDTH):
+            self.FOV = FOV
+            self.HEIGHT = HEIGHT
+            self.WIDTH = WIDTH
+            if os.path.exists(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy")):
+                print(f"{Fore.YELLOW}    > Loading mapping from cache")
+                self.mapping = np.load(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy"))
+                self.mask = np.load(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mask.npy"))
+            else:
+                print(f"{Fore.YELLOW}    > Recalculating self.mapping")
+                print(f"{Fore.YELLOW}    > self.bearings: {self.bearings}")
+                print(f"{Fore.YELLOW}    > FOV: {FOV}, HEIGHT: {HEIGHT}, WIDTH: {WIDTH}")
+                self.mapping = np.zeros((HEIGHT, WIDTH, 2), dtype=int)
+                for x in range(WIDTH):
+                    for y in range(HEIGHT):
+                        theta = np.rad2deg(np.arctan2(x - WIDTH / 2, HEIGHT - y))
+                        r = np.sqrt((x - WIDTH / 2) ** 2 + (HEIGHT - y) ** 2)
+                        beam_id = -1
+                        if np.min(self.bearings) < theta < np.max(self.bearings):
+                            beam_id = self.get_bearing(theta, a.shape[1])
+                        self.mapping[y, x] = [r, beam_id]
+                print(f"    > Mapping shape: {self.mapping.shape}")
+
+                np.save(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy"), self.mapping)
+
+                self.mask = None
+                mask = self.get_fan.remote(np.ones_like(a), self.HEIGHT, self.WIDTH, self.mapping)
+
+                np.save(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_bearings.npy"), self.bearings)
+
+        a = self.get_fan.remote(a, self.HEIGHT, self.WIDTH, self.mapping)
+        b = self.get_fan.remote(b, self.HEIGHT, self.WIDTH, self.mapping)
+
+        a = ray.get(a)
+        b = ray.get(b)
+        if mask is not None:
+            self.mask = ray.get(mask)
+            np.save(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mask.npy"), self.mask)
+
+        if not self.init_origin:
+            self.find_root().origin[1] = a.shape[1] // 2
+            self.find_root().origin[0] = a.shape[0]
+            self.init_origin = True
+
+        return a, b, self.mask, tform, error
 
 class PaddingModule(PipelineModule):
     def __init__(self, padding_ratio):
         super().__init__()
         self.padding_ratio = padding_ratio
+        self.init_origin = False
 
     @staticmethod
     @ray.remote
@@ -95,6 +234,10 @@ class PaddingModule(PipelineModule):
         a = self.pad.remote(a, pad_size)
         b = self.pad.remote(b, pad_size)
         mask = self.pad.remote(mask, pad_size)
+
+        if not self.init_origin:
+            self.find_root().origin += pad_size
+            self.init_origin = True
 
         return ray.get(a), ray.get(b), ray.get(mask), tform, error
 
@@ -186,7 +329,7 @@ class LogPolarModule(PipelineModule):
 
 
 class PhaseCorrelationModule(PipelineModule):
-    def __init__(self, upsample_factor=10, mode='rotation', normalization=None, force_scale=True, invert=False):
+    def __init__(self, upsample_factor=10, mode='rotation', normalization=None, force_scale=True, invert=False, max_rotation=60, max_translation=100):
         super().__init__()
         if mode not in ['rotation', 'translation']:
             raise ValueError("mode must be either 'rotation' or 'translation'")
@@ -195,6 +338,8 @@ class PhaseCorrelationModule(PipelineModule):
         self.force_scale = force_scale
         self.invert = invert
         self.normalization = normalization
+        self.max_rotation = max_rotation
+        self.max_translation = max_translation
 
     def run(self, a, b, mask, tform, error):
         if a is None or b is None:
@@ -202,15 +347,19 @@ class PhaseCorrelationModule(PipelineModule):
 
         center = np.array(a.shape) // 2
 
-        shifts, error, phasediff = phase_cross_correlation(
+        shifts, e, phasediff = phase_cross_correlation(
             a, b, upsample_factor=self.upsample_factor, normalization=self.normalization, disambiguate=False
         )
-        print(f"    > Shifts: {shifts}, Error: {error}, Phasediff: {phasediff}")
+        print(f"    > Shifts: {shifts}, Error: {e}, Phasediff: {phasediff}")
 
         if self.mode == 'rotation':
             angle = shifts[0] * 360 / a.shape[0]
             if self.invert:
                 angle = -angle
+            # if abs(np.rad2deg(angle)) > self.max_rotation:
+            #     print(f"{Fore.YELLOW}    > Skipping rotation due to high angle: {np.rad2deg(angle)}")
+            #     angle = self.max_rotation if angle > 0 else -self.max_rotation
+            #     error[0] = 1
             radius = self.find_root().get_module_by_type(LogPolarModule.__name__)[0].radius
             klog = a.shape[1] / np.log(radius)
             print(f"    > Radius: {radius}")
@@ -219,11 +368,22 @@ class PhaseCorrelationModule(PipelineModule):
             tform += SimilarityTransform(translation=-center)
             tform += SimilarityTransform(scale=1 if self.force_scale else scale, rotation=np.deg2rad(angle))
             tform += SimilarityTransform(translation=center)
+            error[2] = e if abs(angle) < 60 else 1
         else:
             if self.invert:
                 shifts = -shifts
+            # if abs(shifts[0]) > self.max_translation:
+            #     print(f"{Fore.YELLOW}    > Skipping translation due to high shift[0]: {shifts[0]}")
+            #     shifts[0] = self.max_translation if shifts[0] > 0 else -self.max_translation
+            #     error[0] = 1
+            # if abs(shifts[1]) > self.max_translation:
+            #     print(f"{Fore.YELLOW}    > Skipping translation due to high shift[1]: {shifts[1]}")
+            #     shifts[1] = self.max_translation if shifts[1] > 0 else -self.max_translation
+            #     error[1] = 1
             tform += SimilarityTransform(translation=[shifts[1], shifts[0]])
             print(f"    > Translation: {shifts}")
+            error[0] = e if abs(shifts[0]) < np.max(a.shape) // 2 else 1
+            error[1] = e if abs(shifts[0]) < np.max(a.shape) // 2 else 1
 
         return a, b, mask, tform, error
 
@@ -249,9 +409,10 @@ class WarpModule(PipelineModule):
 
     def pad_and_combine(self, img, mask):
         # Find necessary padding for combining warped image
-        margin = np.max(img.shape) // 5
+        margin = np.max(img.shape) // 10
+        # margin = 5
         source_corners = np.array([[margin, margin], [margin, img.shape[0] - margin], [img.shape[1] - margin, img.shape[0] - margin], [img.shape[1] - margin, margin]])
-        corners = (self.find_root().centering_tform.inverse + self.find_root().total_tform)(source_corners)
+        corners = (self.find_root().centering_tform + self.find_root().total_tform.inverse).inverse(source_corners)
 
         max_x = np.max(corners[:, 0])
         max_y = np.max(corners[:, 1])
@@ -263,15 +424,20 @@ class WarpModule(PipelineModule):
         top = int(np.abs(min_y)) if min_y < 0 else 0
         bottom = int(max_y - self.find_root().combined.shape[0] - 1) if max_y >= self.find_root().combined.shape[0] else 0
 
+        print(f"    > Padding image with L {left}, R {right}, T {top}, B {bottom}")
+
         # Update centering transform
         self.find_root().centering_tform += SimilarityTransform(translation=(-left, -top))
+        print(f"    > Centering transform. Translation: {self.find_root().centering_tform.translation} Rotation: {self.find_root().centering_tform.rotation}")
 
         # Pad combined image to fit new corners
         self.find_root().combined = np.pad(self.find_root().combined, ((top, bottom), (left, right)),
                                         mode='constant', constant_values=0)
 
         print(f"    > Image size: {img.shape}, Mask size: {mask.shape}")
-        img[mask != 1] = np.nan
+
+        mask = warp(mask, SimilarityTransform(), output_shape=img.shape)
+        img[mask < 1] = np.nan
         img = warp(img, (self.find_root().centering_tform + self.find_root().total_tform.inverse), output_shape=self.find_root().combined.shape)
         # w_a = 1.0 * self.find_root().combined_count / (self.find_root().combined_count + 1)
         # w_b = 1.0 / (self.find_root().combined_count + 1)
@@ -284,4 +450,5 @@ class WarpModule(PipelineModule):
         # self.find_root().combined = np.maximum(self.find_root().combined, img)
         self.find_root().combined[np.isnan(self.find_root().combined)] = 0
         img[np.isnan(img)] = 0
+
         return img

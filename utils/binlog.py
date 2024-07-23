@@ -12,11 +12,11 @@ def read_binlog(file_path):
             try:
                 binlog = delimited_protobuf.read(fin, message_formats_pb2.BinlogRecord)
                 if (
-                        telemetry_pb2.OculusPingTel.DESCRIPTOR.full_name
+                        telemetry_pb2.MultibeamPingTel.DESCRIPTOR.full_name
                         not in binlog.payload.type_url
                 ):
                     continue
-                ping = telemetry_pb2.OculusPingTel()
+                ping = telemetry_pb2.MultibeamPingTel()
                 ping.ParseFromString(binlog.payload.value)
                 yield ping.ping, binlog.clock_monotonic.seconds + binlog.clock_monotonic.nanos / 1e9
             except Exception as e:
@@ -27,7 +27,8 @@ def read_binlog(file_path):
 def read_ping(file_path, start_frame=0, max_frames=None):
     n_frames = 0
     for ping, ts in read_binlog(file_path):
-        if ping.ping_id < start_frame:
+        n_frames += 1
+        if n_frames < start_frame:
             continue
         if max_frames is not None and n_frames > max_frames:
             return
@@ -37,20 +38,35 @@ def read_ping(file_path, start_frame=0, max_frames=None):
 
         # Reshape the array into a 2D array
         data = data_array.reshape(
-            ping.number_of_ranges, ping.number_of_beams + (4 if ping.has_gains else 0)
+            ping.number_of_ranges, ping.number_of_beams
         )
 
-        # Separate gain (first 4 bytes) and data
-        gain = None
-        if ping.has_gains:
-            gain = np.sqrt(data[:, :4].view(np.uint32))
-            data = data[:, 4:]
-
         # Calculate the aperture
-        aperture = (np.max(ping.bearings) - np.min(ping.bearings)) / 100.0
+        fov = (np.max(ping.bearings) - np.min(ping.bearings))
+        print(f"Max bearing: {np.max(ping.bearings)}")
+        print(f"Min bearing: {np.min(ping.bearings)}")
+        print(f"FoV: {fov}")
 
+        yield n_frames, data, None, fov, ping.range / ping.number_of_ranges, ts
+
+def read_ping_2(file_path, start_frame=0, max_frames=None):
+    n_frames = 0
+    for ping, ts in read_binlog(file_path):
         n_frames += 1
-        yield ping.ping_id, data, gain, aperture, ts
+        if n_frames < start_frame:
+            continue
+        if max_frames is not None and n_frames > max_frames:
+            return
+
+        # Convert the string into an array
+        raw = np.frombuffer(ping.ping_data, dtype=np.uint8)
+
+        # Reshape the array into a 2D array
+        raw = raw.reshape(
+            ping.number_of_ranges, ping.number_of_beams
+        )
+
+        yield ping, raw, ts
 
 
 if __name__ == "__main__":

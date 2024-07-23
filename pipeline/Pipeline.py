@@ -31,6 +31,8 @@ class Pipeline(PipelineModule):
         self.pose_graph = PoseGraph(verbose=verbose)
         self.pose_graph.add_fixed_pose(g2o.SE2())
 
+        self.origin = None
+
     def add_module(self, module: PipelineModule, apply_to=('a', 'b', 'm'), input_stage='chain', output=None):
         name = f"{self.name}_{module.name}__{len(self.modules)}"
 
@@ -58,6 +60,8 @@ class Pipeline(PipelineModule):
                 return
 
     def get_module(self, name):
+        if name == self.name:
+            return self
         for module, _, _, _ in self.modules:
             # Check if the module is the one we are looking for
             if module.name == name:
@@ -87,7 +91,7 @@ class Pipeline(PipelineModule):
     def execute(self, a: np.ndarray, b: np.ndarray):
         mask = np.ones_like(a)
         tform = SimilarityTransform()
-        error = None
+        error = [0, 0, 0]
 
         a, b, mask, tform, error = self.run(a, b, mask, tform, error)
 
@@ -96,9 +100,14 @@ class Pipeline(PipelineModule):
     def run(self, a, b, mask, tform, error):
         start_time = time.time()
         self.source_cache.append((a.copy(), b.copy(), mask.copy()))
-        self.find_root().outputs['source'] \
-            = self.find_root().outputs['chain'] \
-            = (self.source_cache[-1][0], self.source_cache[-1][1], mask)
+        self.find_root().outputs[self.name] = (self.source_cache[-1][0].copy(), self.source_cache[-1][1].copy(), mask.copy())
+        self.find_root().outputs['source'] = (self.source_cache[-1][0].copy(), self.source_cache[-1][1].copy(), mask.copy())
+        self.find_root().outputs['chain'] = (self.source_cache[-1][0].copy(), self.source_cache[-1][1].copy(), mask.copy())
+
+        if self.find_root().origin is None:
+            width = a.shape[1]
+            height = a.shape[0]
+            self.find_root().origin = np.array([width // 2, height // 2])
         for module, apply_to, input_stage, output in self.modules:
             start = time.time()
 
@@ -106,6 +115,8 @@ class Pipeline(PipelineModule):
                 raise ValueError(f"Invalid input_stage: {input_stage}")
 
             a_tmp, b_tmp, mask_tmp = self.find_root().outputs[input_stage]
+            if a_tmp is None or b_tmp is None or mask_tmp is None:
+                raise ValueError(f"Invalid input_stage: {input_stage}")
 
             a_tmp = a_tmp.copy() if 'a' in apply_to else None
             b_tmp = b_tmp.copy() if 'b' in apply_to else None
@@ -117,9 +128,8 @@ class Pipeline(PipelineModule):
             b = b_tmp if 'b' in apply_to else b
             mask = mask_tmp if 'm' in apply_to else mask
 
-            self.find_root().outputs[self.name] \
-                = self.find_root().outputs[module.name] \
-                = self.find_root().outputs['chain'] = (a.copy(), b.copy(), mask.copy())
+            self.find_root().outputs[module.name] = (a.copy(), b.copy(), mask.copy())
+            self.find_root().outputs['chain'] = (a.copy(), b.copy(), mask.copy())
 
             if output is not None:
                 if 'a' in apply_to:
@@ -136,6 +146,7 @@ class Pipeline(PipelineModule):
             color = Fore.RED if total_time > 0.2 else Fore.GREEN
             print(f"{color}  > Module {module.name} took {total_time} seconds{Style.RESET_ALL}")
 
+        self.find_root().outputs[self.name] = (a.copy(), b.copy(), mask.copy())
         print(f"  > Total time for pipeline {self.name}: {time.time() - start_time} seconds")
 
         return a, b, mask, tform, error
@@ -144,8 +155,9 @@ class Pipeline(PipelineModule):
         self.total_tform = self.centering_tform = SimilarityTransform()
         self.combined = None
         self.combined_count = 0
+        name = pipeline.name
         pipeline_id, _ = self.add_module(pipeline)
-        error = None
+        error = [0, 0, 0]
         for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
             if vertex.id() == 0:
                 continue
@@ -158,18 +170,15 @@ class Pipeline(PipelineModule):
 
             a, b, mask = self.get_module(input_id).source_cache[vertex.id() - 1]
 
-            # center = np.array(a.shape) // 2
-            # tform = SimilarityTransform()
-            # tform += SimilarityTransform(translation=-center)
-            # tform += SimilarityTransform(scale=1, rotation=theta)
-            # tform += SimilarityTransform(translation=center)
-            # tform += SimilarityTransform(translation=[x, y])
-            tform = SimilarityTransform(translation=[x, y], rotation=theta)
+            tform = SimilarityTransform(translation=self.find_root().origin)
+            tform += SimilarityTransform(translation=[x, y], rotation=theta)
+            tform += SimilarityTransform(translation=-self.find_root().origin)
             self.total_tform = tform
 
             pipeline.run(a, b, mask, tform, error)
 
         self.remove_module(pipeline_id)
+        pipeline.name = name
 
     def optimize(self, iterations=10, verbose=False):
         for vertex in reversed(self.pose_graph.optimizer.vertices().values()):

@@ -8,7 +8,7 @@ class PoseGraph:
         GraphSLAM in 2D with G2O
         '''
         self.optimizer = g2o.SparseOptimizer()
-        self.solver = g2o.BlockSolverX(g2o.LinearSolverDenseX())
+        self.solver = g2o.BlockSolverSE2(g2o.LinearSolverEigenSE2())
         self.algorithm = g2o.OptimizationAlgorithmLevenberg(self.solver)
         self.optimizer.set_algorithm(self.algorithm)
 
@@ -47,26 +47,27 @@ class PoseGraph:
         self.optimizer.add_vertex(v_se2)
         self.vertex_count += 1
 
-    def add_odometry(self, northings, eastings, heading, information=np.eye(3), invert=False):
+    def add_odometry(self, northings, eastings, heading, information=np.eye(3), invert=False, fixed=False):
         '''
         Add odometry to the graph
         '''
         # Find the last pose vertex id
         vertices = self.optimizer.vertices()
         if len(vertices) == 0:
-            raise ValueError("There is no previous pose, have you forgot to add a fixed initial pose?")
+            raise ValueError("There is no previous pose, have you forgotten to add a fixed initial pose?")
         if self.last_id is None:
             self.last_id = [v for v in vertices if type(vertices[v]) == g2o.VertexSE2][0]
         v_se2 = g2o.VertexSE2()
         if self.verbose:
             print("    > PoseGraph: Adding pose vertex", self.vertex_count)
         v_se2.set_id(self.vertex_count)
-        pose = g2o.SE2(northings, eastings, heading)
+        pose = g2o.SE2(northings, eastings , heading)
         if self.verbose:
             print(f"    > PoseGraph: Adding odometry with pose: {pose.to_vector()}")
         if invert:
             pose = pose.inverse()
         v_se2.set_estimate(self.vertex_pose(self.last_id) * pose)
+        v_se2.set_fixed(fixed)
         self.optimizer.add_vertex(v_se2)
         # add edge
         e_se2 = g2o.EdgeSE2()
@@ -75,14 +76,15 @@ class PoseGraph:
         e_se2.set_vertex(1, self.vertex(self.vertex_count))
         e_se2.set_measurement(pose)
         e_se2.set_information(information)
-        id = self.vertex_count
-        self.optimizer.add_edge(e_se2)
+        current_id = self.vertex_count
+        for i in range(5):
+            self.optimizer.add_edge(e_se2)
         self.vertex_count += 1
         self.edge_count += 1
         if self.verbose:
-            print("    > PoseGraph: Adding SE2 edge between", self.last_id, id)
-        self.last_id = id
-        return id
+            print("    > PoseGraph: Adding SE2 edge between", self.last_id, current_id)
+        self.last_id = current_id
+        return current_id
 
     def add_loop_closure_edge(self, id_start, id_end, northings, eastings, heading, information):
         pose = g2o.SE2(northings, eastings, heading)
