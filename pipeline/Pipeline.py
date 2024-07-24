@@ -31,6 +31,8 @@ class Pipeline(PipelineModule):
         self.pose_graph = PoseGraph(verbose=verbose)
         self.pose_graph.add_fixed_pose(g2o.SE2())
 
+        self.executing = False
+
         self.origin = None
 
     def add_module(self, module: PipelineModule, apply_to=('a', 'b', 'm'), input_stage='chain', output=None):
@@ -89,20 +91,27 @@ class Pipeline(PipelineModule):
         return self.centering_tform + self.total_tform.inverse
 
     def execute(self, a: np.ndarray, b: np.ndarray):
+        self.executing = True
         mask = np.ones_like(a)
         tform = SimilarityTransform()
         error = [0, 0, 0]
 
         a, b, mask, tform, error = self.run(a, b, mask, tform, error)
 
+        self.executing = False
+
         return a, b, mask, tform, error, self.total_tform
 
     def run(self, a, b, mask, tform, error):
         start_time = time.time()
-        self.source_cache.append((a.copy(), b.copy(), mask.copy()))
-        self.find_root().outputs[self.name] = (self.source_cache[-1][0].copy(), self.source_cache[-1][1].copy(), mask.copy())
-        self.find_root().outputs['source'] = (self.source_cache[-1][0].copy(), self.source_cache[-1][1].copy(), mask.copy())
-        self.find_root().outputs['chain'] = (self.source_cache[-1][0].copy(), self.source_cache[-1][1].copy(), mask.copy())
+        a_copy = a.copy()
+        b_copy = b.copy()
+        mask_copy = mask.copy()
+        if self.executing:
+            self.source_cache.append((a_copy, b_copy, mask_copy))
+        self.find_root().outputs[self.name] = (a_copy, b_copy, mask_copy)
+        self.find_root().outputs['source'] = (a_copy, b_copy, mask_copy)
+        self.find_root().outputs['chain'] = (a_copy, b_copy, mask_copy)
 
         if self.find_root().origin is None:
             width = a.shape[1]
@@ -122,7 +131,11 @@ class Pipeline(PipelineModule):
             b_tmp = b_tmp.copy() if 'b' in apply_to else None
             mask_tmp = mask_tmp.copy() if 'm' in apply_to else mask.copy()
 
+            if self.executing:
+                module.executing = True
             a_tmp, b_tmp, mask_tmp, tform, error = module.run(a_tmp, b_tmp, mask_tmp, tform, error)
+            if self.executing:
+                module.executing = False
 
             a = a_tmp if 'a' in apply_to else a
             b = b_tmp if 'b' in apply_to else b
@@ -181,16 +194,18 @@ class Pipeline(PipelineModule):
         pipeline.name = name
 
     def optimize(self, iterations=10, verbose=False):
-        for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
-            print(f"Vertex {vertex.id()} at {vertex.estimate().to_vector()}")
-        for edge in self.pose_graph.optimizer.edges():
-            print(f"Edge {edge.id()} at {edge.measurement().to_vector()}")
+        if verbose:
+            for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
+                print(f"Vertex {vertex.id()} at {vertex.estimate().to_vector()}")
+            for edge in self.pose_graph.optimizer.edges():
+                print(f"Edge {edge.id()} at {edge.measurement().to_vector()}")
         self.total_tform = self.centering_tform = SimilarityTransform()
         self.pose_graph.optimize(iterations, verbose=verbose)
-        for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
-            print(f"Realigned Vertex {vertex.id()} at {vertex.estimate().to_vector()}")
-        for edge in self.pose_graph.optimizer.edges():
-            print(f"Realigned Edge {edge.id()} at {edge.measurement().to_vector()}")
+        if verbose:
+            for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
+                print(f"Realigned Vertex {vertex.id()} at {vertex.estimate().to_vector()}")
+            for edge in self.pose_graph.optimizer.edges():
+                print(f"Realigned Edge {edge.id()} at {edge.measurement().to_vector()}")
 
 
 

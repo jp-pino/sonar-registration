@@ -39,6 +39,8 @@ if __name__ == "__main__":
 
             if WIDTH is None:
                 HEIGHT, WIDTH, _ = frame.shape
+                HEIGHT *= 2
+                WIDTH *= 2
                 RATIO = HEIGHT / WIDTH
 
             height, width, layers = frame.shape

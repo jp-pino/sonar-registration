@@ -78,8 +78,9 @@ def main():
     conditioning.add_module(FanModule2(a_ping.bearings))
     conditioning.add_module(PaddingModule(4))
 
-    # filtering.add_module(BandpassModule(2, 15))
-    filtering.add_module(BandpassModule(2, 15))
+    # filtering.add_module(BandpassModule(2, 20))
+    # filtering.add_module(BandpassTestingModule(output=out))
+    filtering.add_module(BandpassModule(2, 20))
     filtering.add_module(MaskModule(padding=50, sigma=15))
 
     start_id, _ = registration.add_module(IdentityModule())
@@ -107,17 +108,18 @@ def main():
 
         print(f"Processing pings {count - 1} and {count}")
         pipeline.execute(a_raw, b_raw)
-        # if count % 10 == 0:
-        #     fig = plot_slam2d(pipeline.pose_graph.optimizer, "Before optimisation")
-        #     fig.write_image(os.path.join(out, f"graph_{count}.png"))
-        #     fig.write_html(os.path.join(out, f"graph_{count}.html"))
-        #     pipeline.pose_graph.get_last().set_fixed(True)
-        #     pipeline.optimize(1000, verbose=True)
-        #     pipeline.pose_graph.get_last().set_fixed(False)
-        #     pipeline.redraw(realignment, filtering_id)
-        #     fig = plot_slam2d(pipeline.pose_graph.optimizer, "After optimisation")
-        #     fig.write_image(os.path.join(out, f"graph_{count}_optimized.png"))
-        #     fig.write_html(os.path.join(out, f"graph_{count}_optimized.html"))
+        if count % 10 == 0:
+            fig = plot_slam2d(pipeline.pose_graph.optimizer, "Before optimisation")
+            fig.write_image(os.path.join(out, f"graph_{count}.png"))
+            fig.write_html(os.path.join(out, f"graph_{count}.html"))
+            pipeline.pose_graph.get_last().set_fixed(True)
+            pipeline.optimize(50, verbose=False)
+            pipeline.pose_graph.get_last().set_fixed(False)
+            pipeline.redraw(realignment, filtering_id)
+            fig = plot_slam2d(pipeline.pose_graph.optimizer, "After optimisation")
+            fig.write_image(os.path.join(out, f"graph_{count}_optimized.png"))
+            fig.write_html(os.path.join(out, f"graph_{count}_optimized.html"))
+            # break
 
         # if count % 13 == 0:
         #     pipeline.pose_graph.get_last().set_fixed(True)

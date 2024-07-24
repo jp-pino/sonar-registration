@@ -8,7 +8,7 @@ class PoseGraph:
         GraphSLAM in 2D with G2O
         '''
         self.optimizer = g2o.SparseOptimizer()
-        self.solver = g2o.BlockSolverSE2(g2o.LinearSolverEigenSE2())
+        self.solver = g2o.BlockSolverSE2(g2o.LinearSolverPCGSE2())
         self.algorithm = g2o.OptimizationAlgorithmLevenberg(self.solver)
         self.optimizer.set_algorithm(self.algorithm)
 
@@ -45,46 +45,49 @@ class PoseGraph:
         v_se2.set_estimate(pose)
         v_se2.set_fixed(True)
         self.optimizer.add_vertex(v_se2)
+        self.last_id = vertex_id
         self.vertex_count += 1
 
-    def add_odometry(self, northings, eastings, heading, information=np.eye(3), invert=False, fixed=False):
-        '''
-        Add odometry to the graph
-        '''
-        # Find the last pose vertex id
-        vertices = self.optimizer.vertices()
-        if len(vertices) == 0:
-            raise ValueError("There is no previous pose, have you forgotten to add a fixed initial pose?")
-        if self.last_id is None:
-            self.last_id = [v for v in vertices if type(vertices[v]) == g2o.VertexSE2][0]
-        v_se2 = g2o.VertexSE2()
-        if self.verbose:
-            print("    > PoseGraph: Adding pose vertex", self.vertex_count)
-        v_se2.set_id(self.vertex_count)
-        pose = g2o.SE2(northings, eastings , heading)
-        if self.verbose:
-            print(f"    > PoseGraph: Adding odometry with pose: {pose.to_vector()}")
-        if invert:
-            pose = pose.inverse()
-        v_se2.set_estimate(self.vertex_pose(self.last_id) * pose)
-        v_se2.set_fixed(fixed)
-        self.optimizer.add_vertex(v_se2)
-        # add edge
-        e_se2 = g2o.EdgeSE2()
-        e_se2.set_id(self.edge_count)
-        e_se2.set_vertex(0, self.vertex(self.last_id))
-        e_se2.set_vertex(1, self.vertex(self.vertex_count))
-        e_se2.set_measurement(pose)
-        e_se2.set_information(information)
-        current_id = self.vertex_count
-        for i in range(5):
-            self.optimizer.add_edge(e_se2)
+    def add_vertex(self, id, pose, fixed=False):
+        vertex = g2o.VertexSE2()
+        vertex.set_id(id)
+        vertex.set_estimate(g2o.SE2(pose[0], pose[1], pose[2]))
+        vertex.set_fixed(fixed)
+        self.optimizer.add_vertex(vertex)
+
+    def add_odometry(self, tx, ty, theta, information):
+        odometry_pose = g2o.SE2(tx, ty, theta)
+
+        # Create a new vertex ID
+        new_vertex_id = self.last_id + 1
+        # Get the last vertex pose
+        last_vertex = self.optimizer.vertex(self.last_id)
+        last_pose = last_vertex.estimate()
+
+        # Calculate the new pose based on the odometry measurement
+        new_pose = last_pose * g2o.SE2(odometry_pose[0], odometry_pose[1], odometry_pose[2])
+
+        # Add the new vertex
+        self.add_vertex(new_vertex_id, (new_pose[0], new_pose[1], new_pose[2]))
+
+        # Add the odometry edge
+        edge = g2o.EdgeSE2()
+        edge.set_vertex(0, self.optimizer.vertex(self.last_id))
+        edge.set_vertex(1, self.optimizer.vertex(new_vertex_id))
+        edge.set_measurement(g2o.SE2(odometry_pose[0], odometry_pose[1], odometry_pose[2]))
+        edge.set_information(information)
+
+        # Add a robust kernel to the edge
+        kernel = g2o.RobustKernelHuber()
+        edge.set_robust_kernel(kernel)
+        self.optimizer.add_edge(edge)
+
+        # Update the last vertex ID
+        self.last_id = new_vertex_id
         self.vertex_count += 1
         self.edge_count += 1
-        if self.verbose:
-            print("    > PoseGraph: Adding SE2 edge between", self.last_id, current_id)
-        self.last_id = current_id
-        return current_id
+
+        return new_vertex_id
 
     def add_loop_closure_edge(self, id_start, id_end, northings, eastings, heading, information):
         pose = g2o.SE2(northings, eastings, heading)
