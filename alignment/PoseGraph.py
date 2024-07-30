@@ -45,6 +45,7 @@ class PoseGraph:
         return vertex
 
     def add_edge(self, id_start, id_end, pose, information):
+        print(f"Adding edge from {id_start} to {id_end}")
         edge = g2o.EdgeSE2()
         edge_id = self.edge_count
         edge.set_id(edge_id)
@@ -58,8 +59,10 @@ class PoseGraph:
         return edge
 
     def add_odometry(self, odometry_pose, information, boost=1):
+        last_id = self.last_id
+
         # Get the last vertex pose
-        last_pose = self.optimizer.vertex(self.last_id).estimate()
+        last_pose = self.optimizer.vertex(last_id).estimate()
 
         # Calculate the new pose based on the odometry measurement
         new_pose = last_pose * odometry_pose
@@ -68,13 +71,8 @@ class PoseGraph:
         vertex = self.add_vertex(new_pose, set_last=True)
 
         # Add the odometry edge
-        edge = self.add_edge(self.last_id, vertex.id(), odometry_pose, information)
-
-        for i in range(boost - 1):
-            self.optimizer.add_edge(edge)
-
-        # Update the last vertex ID
-        self.edge_count += 1
+        for i in range(boost):
+            self.add_edge(last_id, vertex.id(), odometry_pose, information)
 
         return vertex
 

@@ -34,6 +34,8 @@ def get_fake_data(path, start_frame, max_frames):
         try:
             img = plt.imread(os.path.join(path, f'raw_{i}.png'))
             img = np.dot(img[..., :3], [0.299, 0.587, 0.114])
+            # yield Object(bearings=np.array([theta for theta in np.linspace(-60, 60, 256)]), number_of_ranges=520,
+            #              range=52), img, i * 0.1
             yield Object(bearings=np.array([theta for theta in np.linspace(-60, 60, 520)]), number_of_ranges=520,
                          range=20), img, i * 0.1
             i += 1
@@ -124,7 +126,7 @@ def create_phase_correlation(args, bearings, fov, height, width, range_resolutio
                                                 delta_theta=(fov / 10), delta_radius=10),
                             input_stage=pipeline.name)
     pipeline.add_module(IdentityModule(), input_stage=padding_id)
-    # pipeline.add_module(WarpModule(combine=True), 'b')
+    pipeline.add_module(WarpModule(combine=True), 'b')
 
     realignment = Pipeline()
     realignment.add_module(ResizeModule(args.resize))
@@ -142,7 +144,9 @@ def main():
     parser.add_argument("path", help="Path to the log file")
     parser.add_argument("--out", help="Output directory", default="./out")
     parser.add_argument("--odometry_log_file", help="Read odometry data from a bez file")
-    parser.add_argument("--output_frequency", help="Output frequency. How many frames before output is redrawn",
+    parser.add_argument("--output_frequency", help="How many frames to skip before outputting a frame",
+                        type=int, default=25)
+    parser.add_argument("--redraw_frequency", help="How many frames before output is redrawn",
                         type=int, default=25)
     parser.add_argument("--bandpass_low", help="Low cutoff value for bandpass filter", type=int, default=2)
     parser.add_argument("--bandpass_high", help="High cutoff value for bandpass filter", type=int, default=20)
@@ -154,7 +158,7 @@ def main():
     parser.add_argument("--disable_resizing", help="Disable resizing", action="store_true", default=False)
     parser.add_argument("--disable_loop_closure", help="Disable loop closure", action="store_true", default=False)
     parser.add_argument("--disable_realignment", help="Disable realignment", action="store_true", default=False)
-    parser.add_argument("--error-threshold", help="Error threshold for loop closure matches", type=int, default=1)
+    parser.add_argument("--error_threshold", help="Error threshold for loop closure matches", type=float, default=1)
     parser.add_argument("--fmt", help="Use fourier-mellin transform", action="store_const",
                         const=Algorithm.FOURIER_MELLIN, dest="algorithm")
     parser.add_argument("--pc", help="Use phase correlation", action="store_const", const=Algorithm.PHASE_CORRELATION,
@@ -190,13 +194,23 @@ def main():
         prev_easting = position.position_estimate.easting
         start_odometer = position.position_estimate.odometer
 
+
+    speed_limit = 1.5 # m/s
+
+
     bearings = a_ping.bearings
     fov = np.max(bearings) - np.min(bearings)
     height = a_ping.number_of_ranges
     width = int(2 * a_ping.number_of_ranges * np.sin(np.deg2rad(fov / 2)))
     total_size = a_raw.shape[0] * a_raw.shape[1]
-    ratio = np.sqrt(args.resize / total_size)
+    if not args.disable_resizing:
+        ratio = np.sqrt(args.resize / total_size)
+    else:
+        ratio = 1
     range_resolution = (a_ping.range / (a_ping.number_of_ranges * ratio))
+
+    translation_limit = (speed_limit / range_resolution) * 0.1 # pixels / frame
+
     # print(a_ping.range)
     # print(a_ping.number_of_ranges)
     # print(a_ping.range / a_ping.number_of_ranges, range_resolution)
@@ -260,9 +274,12 @@ def main():
             fig.write_image(os.path.join(args.out, f"graph_{count}_optimized.png"))
             fig.write_html(os.path.join(args.out, f"graph_{count}_optimized.html"))
 
-        if count % args.output_frequency == 0:
+        if count % args.redraw_frequency == 0:
             pipeline.redraw(realignment, redraw_id)
+
+        if count % args.output_frequency == 0:
             plt.imsave(os.path.join(args.out, f"combined_{count:08}.png"), pipeline.combined, cmap="gray")
+
 
         # if count % (max_frames / 5 if max_frames is not None else 50) == 0:
         # plt.imsave(os.path.join(args.out, f"combined_{count:08}.png"), pipeline.combined, cmap="gray")

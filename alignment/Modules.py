@@ -88,9 +88,9 @@ class FindNeighborsModule(PipelineModule):
                   f"Scale: {tform_aux.scale}, "
                   f"Error: {e}")
 
-            if np.max(np.abs(e)) > 10:
-                print(f"    > Skipping match due to high error: {error_neighbor}")
-                continue
+            # if np.max(np.abs(e)) > 10:
+            #     print(f"    > Skipping match due to high error: {error_neighbor}")
+            #     continue
 
             # if self.output is not None:
             # plt.imsave(os.path.join(self.output, f"match_{current}_{match}_a.png"), a, cmap="gray")
@@ -129,7 +129,7 @@ class UpdateTformModule(PipelineModule):
         # e = 1 - np.array(error)
         # e = np.diag(np.power(e, 2)) * 1000
 
-        e = np.power(1 / (np.array(error) / 100), 2)
+        e = np.power(1 / (np.array(error)), 2)
 
         # e = np.linalg.inv(np.diag(np.power(e, 2)))
         # e = np.linalg.inv((error ** 2) * np.eye(3))
@@ -150,8 +150,7 @@ class UpdateTformModule(PipelineModule):
             g2o.SE2(tform_aux.translation[0],
                     tform_aux.translation[1],
                     tform_aux.rotation),
-            np.diag(e),
-            5)
+            np.diag(e))
         self.find_root().total_tform += tform
 
         return a, b, mask, tform, error
@@ -213,14 +212,10 @@ class OdometerModule(PipelineModule):
 
     def extract_data(self, tform):
 
-        origin = tform(np.array([[0, 0]]))
         theta = tform.rotation
-        print(f"    > Odom X: {origin[0][0]}, Y: {origin[0][1]}, θ: {np.rad2deg(theta)}")
-        x = origin[0][0] * self.range_resolution
-        y = origin[0][1] * self.range_resolution
-        print(f"    > Odom X: {x}, Y: {y}")
-        # x = tform.translation[0] * self.range_resolution
-        # y = tform.translation[1] * self.range_resolution
+        print(f"    > Odom range resolution: {self.range_resolution}")
+        x = tform.translation[0] * self.range_resolution
+        y = tform.translation[1] * self.range_resolution
 
         self.x.append(x)
         self.y.append(y)
