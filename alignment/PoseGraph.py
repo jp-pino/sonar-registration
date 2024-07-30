@@ -32,74 +32,78 @@ class PoseGraph:
         '''
         return self.optimizer.vertex(id)
 
-    def add_fixed_pose(self, pose, vertex_id=None):
-        '''
-        Add fixed pose to the graph
-        '''
-        v_se2 = g2o.VertexSE2()
-        if vertex_id is None:
-            vertex_id = self.vertex_count
-        v_se2.set_id(vertex_id)
-        if self.verbose:
-            print("    > PoseGraph: Adding fixed pose vertex with ID", vertex_id)
-        v_se2.set_estimate(pose)
-        v_se2.set_fixed(True)
-        self.optimizer.add_vertex(v_se2)
-        self.last_id = vertex_id
-        self.vertex_count += 1
-
-    def add_vertex(self, id, pose, fixed=False):
+    def add_vertex(self, pose, set_last=False, fixed=False):
+        vertex_id = self.vertex_count
         vertex = g2o.VertexSE2()
-        vertex.set_id(id)
-        vertex.set_estimate(g2o.SE2(pose[0], pose[1], pose[2]))
+        vertex.set_id(vertex_id)
+        vertex.set_estimate(pose)
         vertex.set_fixed(fixed)
         self.optimizer.add_vertex(vertex)
+        self.vertex_count += 1
+        if set_last:
+            self.last_id = vertex_id
+        return vertex
 
-    def add_odometry(self, tx, ty, theta, information):
-        odometry_pose = g2o.SE2(tx, ty, theta)
+    def add_edge(self, id_start, id_end, pose, information):
+        edge = g2o.EdgeSE2()
+        edge_id = self.edge_count
+        edge.set_id(edge_id)
+        edge.set_vertex(0, self.vertex(id_start))
+        edge.set_vertex(1, self.vertex(id_end))
+        edge.set_measurement(pose)
+        edge.set_information(information)
+        edge.set_robust_kernel(g2o.RobustKernelHuber())
+        self.optimizer.add_edge(edge)
+        self.edge_count += 1
+        return edge
 
-        # Create a new vertex ID
-        new_vertex_id = self.last_id + 1
+    def add_odometry(self, odometry_pose, information, boost=1):
         # Get the last vertex pose
-        last_vertex = self.optimizer.vertex(self.last_id)
-        last_pose = last_vertex.estimate()
+        last_pose = self.optimizer.vertex(self.last_id).estimate()
 
         # Calculate the new pose based on the odometry measurement
-        new_pose = last_pose * g2o.SE2(odometry_pose[0], odometry_pose[1], odometry_pose[2])
+        new_pose = last_pose * odometry_pose
 
         # Add the new vertex
-        self.add_vertex(new_vertex_id, (new_pose[0], new_pose[1], new_pose[2]))
+        vertex = self.add_vertex(new_pose, set_last=True)
 
         # Add the odometry edge
-        edge = g2o.EdgeSE2()
-        edge.set_vertex(0, self.optimizer.vertex(self.last_id))
-        edge.set_vertex(1, self.optimizer.vertex(new_vertex_id))
-        edge.set_measurement(g2o.SE2(odometry_pose[0], odometry_pose[1], odometry_pose[2]))
-        edge.set_information(information)
+        edge = self.add_edge(self.last_id, vertex.id(), odometry_pose, information)
 
-        # Add a robust kernel to the edge
-        kernel = g2o.RobustKernelHuber()
-        edge.set_robust_kernel(kernel)
-        self.optimizer.add_edge(edge)
+        for i in range(boost - 1):
+            self.optimizer.add_edge(edge)
 
         # Update the last vertex ID
-        self.last_id = new_vertex_id
+        self.edge_count += 1
+
+        return vertex
+
+    def add_landmark_to_last_vertex(self, x, y):
+        # Create a new vertex ID
+        landmark_id = self.vertex_count + 1
+
+        # Create vertex
+        vertex = g2o.VertexPointXY()
+        vertex.set_id(landmark_id)
+        vertex.set_estimate(np.array([x, y]))
+        vertex.set_fixed(True)
+        self.optimizer.add_vertex(vertex)
+
+        # Create edge
+        edge = g2o.EdgeSE2PointXY()
+        edge.set_id(self.edge_count)
+        edge.set_vertex(0, self.get_last())
+        edge.set_vertex(1, self.optimizer.vertex(landmark_id))
+        edge.set_measurement(np.array([0, 0]))
+        edge.set_information(np.diag(np.array([1000, 1000])))
+        self.optimizer.add_edge(edge)
+
+        print(f"Landmark id {landmark_id}")
+
         self.vertex_count += 1
         self.edge_count += 1
 
-        return new_vertex_id
-
-    def add_loop_closure_edge(self, id_start, id_end, northings, eastings, heading, information):
-        pose = g2o.SE2(northings, eastings, heading)
-        # add edge
-        e_se2 = g2o.EdgeSE2()
-        e_se2.set_id(self.edge_count)
-        e_se2.set_vertex(0, self.vertex(id_start))
-        e_se2.set_vertex(1, self.vertex(id_end))
-        e_se2.set_measurement(pose)
-        e_se2.set_information(information)
-        self.optimizer.add_edge(e_se2)
-        self.edge_count += 1
+        return vertex
 
     def find_possible_matches(self, node_id, delta_pos, delta_theta):
         matches = []
@@ -107,13 +111,23 @@ class PoseGraph:
         x, y, theta = vertex.estimate().to_vector()
         # Find closes vertices
         for vertex_2 in self.optimizer.vertices().values():
-            if vertex.id() == vertex_2.id() or vertex_2.id() == (vertex.id() - 1) or vertex_2.id() == 0:
+            if type(vertex_2) != g2o.VertexSE2:
+                continue
+            if vertex.id() == vertex_2.id() or vertex_2.id() == 0:
                 continue
             test_x, test_y, test_theta = vertex_2.estimate().to_vector()
-            if np.linalg.norm([x - test_x, y - test_y]) <= delta_pos:
+            distance = np.linalg.norm([x - test_x, y - test_y])
+            if distance <= delta_pos:
                 theta_diff = np.abs(theta - test_theta)
                 if theta_diff <= np.deg2rad(delta_theta):
-                    matches.append(vertex_2.id())
+                    matches.append([vertex_2.id(), distance, theta_diff])
+
+        # Sort by distance and theta difference
+        matches = sorted(matches, key=lambda el: el[1] * 10 + el[2])
+
+        # Return only the vertex IDs
+        matches = [el[0] for el in matches]
+
         return matches
 
     def optimize(self, iterations=10, verbose=None):
@@ -124,5 +138,6 @@ class PoseGraph:
         if verbose is None:
             verbose = self.verbose
         self.optimizer.set_verbose(verbose)
+        # self.optimizer.save("test.g2o")
         self.optimizer.optimize(iterations)
         return self.optimizer.chi2()

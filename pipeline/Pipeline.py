@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import os
 import time
 
@@ -29,11 +30,16 @@ class Pipeline(PipelineModule):
 
         self.verbose = verbose
         self.pose_graph = PoseGraph(verbose=verbose)
-        self.pose_graph.add_fixed_pose(g2o.SE2())
+        self.pose_graph.add_vertex(g2o.SE2(), set_last=True, fixed=True)
 
         self.executing = False
 
         self.origin = None
+
+    def read_cache(self, cache_id):
+        a, b, mask = self.source_cache[cache_id]
+        return a.copy(), b.copy(), mask.copy()
+
 
     def add_module(self, module: PipelineModule, apply_to=('a', 'b', 'm'), input_stage='chain', output=None):
         name = f"{self.name}_{module.name}__{len(self.modules)}"
@@ -104,14 +110,12 @@ class Pipeline(PipelineModule):
 
     def run(self, a, b, mask, tform, error):
         start_time = time.time()
-        a_copy = a.copy()
-        b_copy = b.copy()
-        mask_copy = mask.copy()
         if self.executing:
-            self.source_cache.append((a_copy, b_copy, mask_copy))
-        self.find_root().outputs[self.name] = (a_copy, b_copy, mask_copy)
-        self.find_root().outputs['source'] = (a_copy, b_copy, mask_copy)
-        self.find_root().outputs['chain'] = (a_copy, b_copy, mask_copy)
+            self.source_cache.append((a.copy(), b.copy(), mask.copy()))
+            print(f"Appending to source cache. Length: {len(self.source_cache)}")
+        self.find_root().outputs[self.name] = (a.copy(), b.copy(), mask.copy())
+        self.find_root().outputs['source'] = (a.copy(), b.copy(), mask.copy())
+        self.find_root().outputs['chain'] = (a.copy(), b.copy(), mask.copy())
 
         if self.find_root().origin is None:
             width = a.shape[1]
@@ -172,6 +176,9 @@ class Pipeline(PipelineModule):
         pipeline_id, _ = self.add_module(pipeline)
         error = [0, 0, 0]
         for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
+            if type(vertex) != g2o.VertexSE2:
+                continue
+
             if vertex.id() == 0:
                 continue
 
@@ -181,7 +188,7 @@ class Pipeline(PipelineModule):
             x, y, theta = vertex.estimate().to_vector()
             print(f"Vertex {vertex.id()} at {x}, {y}, {np.rad2deg(theta)}")
 
-            a, b, mask = self.get_module(input_id).source_cache[vertex.id() - 1]
+            a, b, mask = self.get_module(input_id).read_cache(vertex.id() - 1)
 
             tform = SimilarityTransform(translation=self.find_root().origin)
             tform += SimilarityTransform(translation=[x, y], rotation=theta)
@@ -196,15 +203,30 @@ class Pipeline(PipelineModule):
     def optimize(self, iterations=10, verbose=False):
         if verbose:
             for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
+                if type(vertex) != g2o.VertexSE2:
+                    continue
                 print(f"Vertex {vertex.id()} at {vertex.estimate().to_vector()}")
             for edge in self.pose_graph.optimizer.edges():
+                if type(edge) != g2o.EdgeSE2:
+                    continue
                 print(f"Edge {edge.id()} at {edge.measurement().to_vector()}")
-        self.total_tform = self.centering_tform = SimilarityTransform()
+
+
+        start_time = time.time()
+        print("Optimizing...")
+        self.pose_graph.get_last().set_fixed(True)
         self.pose_graph.optimize(iterations, verbose=verbose)
+        self.pose_graph.get_last().set_fixed(False)
+        print(f"Optimization took {time.time() - start_time} seconds")
+
         if verbose:
             for vertex in reversed(self.pose_graph.optimizer.vertices().values()):
+                if type(vertex) != g2o.VertexSE2:
+                    continue
                 print(f"Realigned Vertex {vertex.id()} at {vertex.estimate().to_vector()}")
             for edge in self.pose_graph.optimizer.edges():
+                if type(edge) != g2o.EdgeSE2:
+                    continue
                 print(f"Realigned Edge {edge.id()} at {edge.measurement().to_vector()}")
 
 

@@ -6,19 +6,19 @@ from protocol import message_formats_pb2, telemetry_pb2
 import numpy as np
 
 
-def read_binlog(file_path):
+def read_binlog(file_path, message=telemetry_pb2.MultibeamPingTel):
     with gzip.open(file_path, "rb") as fin:
         while True:
             try:
                 binlog = delimited_protobuf.read(fin, message_formats_pb2.BinlogRecord)
                 if (
-                        telemetry_pb2.MultibeamPingTel.DESCRIPTOR.full_name
+                        message.DESCRIPTOR.full_name
                         not in binlog.payload.type_url
                 ):
                     continue
-                ping = telemetry_pb2.MultibeamPingTel()
+                ping = message()
                 ping.ParseFromString(binlog.payload.value)
-                yield ping.ping, binlog.clock_monotonic.seconds + binlog.clock_monotonic.nanos / 1e9
+                yield ping, binlog.clock_monotonic.seconds + binlog.clock_monotonic.nanos / 1e9
             except Exception as e:
                 print(e)
                 return
@@ -26,37 +26,32 @@ def read_binlog(file_path):
 
 def read_ping(file_path, start_frame=0, max_frames=None):
     n_frames = 0
-    for ping, ts in read_binlog(file_path):
+    for ping, data, ts in read_ping_2(file_path, start_frame, max_frames):
         n_frames += 1
-        if n_frames < start_frame:
-            continue
-        if max_frames is not None and n_frames > max_frames:
-            return
-
-        # Convert the string into an array
-        data_array = np.frombuffer(ping.ping_data, dtype=np.uint8)
-
-        # Reshape the array into a 2D array
-        data = data_array.reshape(
-            ping.number_of_ranges, ping.number_of_beams
-        )
 
         # Calculate the aperture
-        fov = (np.max(ping.bearings) - np.min(ping.bearings))
+        fov = np.max(ping.bearings) - np.min(ping.bearings)
         print(f"Max bearing: {np.max(ping.bearings)}")
         print(f"Min bearing: {np.min(ping.bearings)}")
         print(f"FoV: {fov}")
 
         yield n_frames, data, None, fov, ping.range / ping.number_of_ranges, ts
 
+
 def read_ping_2(file_path, start_frame=0, max_frames=None):
+    ping_generator = read_binlog(file_path)
     n_frames = 0
-    for ping, ts in read_binlog(file_path):
+
+    for i in range(start_frame):
+        next(ping_generator)
+
+    for ping, ts in ping_generator:
         n_frames += 1
-        if n_frames < start_frame:
-            continue
+        print("Frame", n_frames)
         if max_frames is not None and n_frames > max_frames:
             return
+
+        ping = ping.ping
 
         # Convert the string into an array
         raw = np.frombuffer(ping.ping_data, dtype=np.uint8)

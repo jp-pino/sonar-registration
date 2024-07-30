@@ -43,7 +43,7 @@ if __name__ == '__main__':
     registration.add_module(PaddingModule(4))
     registration.add_module(MaskModule(padding=50, sigma=15))
     registration.add_module(LogPolarModule(order=3))
-    registration.add_module(PhaseCorrelationModule(10, 'rotation', invert=True))
+    registration.add_module(PhaseCorrelationModule(10, 'rotation', log_polar=True))
     registration.add_module(FanModule(a_aperture), input_stage=resize_id)
     padding_id, _ = registration.add_module(PaddingModule(4))
     registration.add_module(MaskModule())

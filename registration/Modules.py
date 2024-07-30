@@ -72,7 +72,7 @@ class ResizeModule(PipelineModule):
                 f"    > {Fore.YELLOW}Warning: Image size ({total_size}) is smaller than target size({size}), skipping resizing{Style.RESET_ALL}")
             return img
 
-        ratio = size / total_size
+        ratio = np.sqrt(size / total_size)
         img = resize(img.copy(), (int(img.shape[0] * ratio), int(img.shape[1] * ratio)), anti_aliasing=True)
         return img
 
@@ -123,7 +123,7 @@ class FanModule(PipelineModule):
 
 
 class FanModule2(PipelineModule):
-    def __init__(self, bearings, cache="cache"):
+    def __init__(self, bearings, output=""):
         super().__init__()
         self.bearings = bearings
         self.mapping = None
@@ -131,11 +131,11 @@ class FanModule2(PipelineModule):
         self.HEIGHT = None
         self.WIDTH = None
         self.mask = None
-        self.cache = cache
         self.init_origin = False
+        self.output = output
 
         # Make sure cache directory exists
-        os.makedirs(self.cache, exist_ok=True)
+        os.makedirs(os.path.join(output, "cache"), exist_ok=True)
 
     @staticmethod
     @ray.remote
@@ -175,10 +175,10 @@ class FanModule2(PipelineModule):
             self.FOV = FOV
             self.HEIGHT = HEIGHT
             self.WIDTH = WIDTH
-            if os.path.exists(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy")):
+            if os.path.exists(os.path.join(self.output, "cache", f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy")):
                 print(f"{Fore.YELLOW}    > Loading mapping from cache")
-                self.mapping = np.load(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy"))
-                self.mask = np.load(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mask.npy"))
+                self.mapping = np.load(os.path.join(self.output, "cache", f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy"))
+                self.mask = np.load(os.path.join(self.output, "cache", f"{FOV}_{WIDTH}_{HEIGHT}_mask.npy"))
             else:
                 print(f"{Fore.YELLOW}    > Recalculating self.mapping")
                 print(f"{Fore.YELLOW}    > self.bearings: {self.bearings}")
@@ -194,12 +194,12 @@ class FanModule2(PipelineModule):
                         self.mapping[y, x] = [r, beam_id]
                 print(f"    > Mapping shape: {self.mapping.shape}")
 
-                np.save(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy"), self.mapping)
+                np.save(os.path.join(self.output, "cache", f"{FOV}_{WIDTH}_{HEIGHT}_mapping.npy"), self.mapping)
 
                 self.mask = None
                 mask = self.get_fan.remote(np.ones_like(a), self.HEIGHT, self.WIDTH, self.mapping)
 
-                np.save(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_bearings.npy"), self.bearings)
+                np.save(os.path.join(self.output, "cache", f"{FOV}_{WIDTH}_{HEIGHT}_bearings.npy"), self.bearings)
 
         a = self.get_fan.remote(a, self.HEIGHT, self.WIDTH, self.mapping)
         b = self.get_fan.remote(b, self.HEIGHT, self.WIDTH, self.mapping)
@@ -208,7 +208,7 @@ class FanModule2(PipelineModule):
         b = ray.get(b)
         if mask is not None:
             self.mask = ray.get(mask)
-            np.save(os.path.join(self.cache, f"{FOV}_{WIDTH}_{HEIGHT}_mask.npy"), self.mask)
+            np.save(os.path.join(self.output, "cache", f"{FOV}_{WIDTH}_{HEIGHT}_mask.npy"), self.mask)
 
         if not self.init_origin:
             self.find_root().origin[1] = a.shape[1] // 2
@@ -317,6 +317,11 @@ class FourierModule(PipelineModule):
         if data is None:
             return None
         data = np.abs(np.fft.fftshift(np.fft.fft2(data)))
+        center = np.array(data.shape) // 2
+
+        # make a black square in the center of the image
+        # margin = 0
+        # data[center[0] - margin:center[0] + margin, center[1] - margin:center[1] + margin] = 0
         return data
 
 
@@ -337,31 +342,37 @@ class LogPolarModule(PipelineModule):
         shape = data.shape
         return warp_polar(data, radius=radius, scaling='log', order=order, output_shape=shape)
 
-    def __init__(self, radius_factor=8, order=3):
+    def __init__(self, radius_factor=1/8, order=3):
         super().__init__()
         self.radius_factor = radius_factor
         self.order = order
         self.radius = None
 
     def run(self, a, b, mask, tform, error):
-        self.radius = a.shape[0] // self.radius_factor
+        self.radius = int(a.shape[0] * self.radius_factor)
 
         a = self.log_polar_transform.remote(a, self.radius, self.order)
         b = self.log_polar_transform.remote(b, self.radius, self.order)
 
-        return ray.get(a), ray.get(b), mask, tform, error
+        a = ray.get(a)
+        b = ray.get(b)
+
+        print(f"    > Radius: {self.radius}")
+        print(f"    > Shape: {a.shape}")
+
+        return a, b, mask, tform, error
 
 
 class PhaseCorrelationModule(PipelineModule):
-    def __init__(self, upsample_factor=10, mode='rotation', normalization=None, force_scale=True, invert=False,
-                 max_rotation=60, max_translation=100):
+    def __init__(self, upsample_factor=10, mode='rotation', normalization=None, force_scale=True, log_polar=True,
+                 max_rotation=80, max_translation=100):
         super().__init__()
         if mode not in ['rotation', 'translation']:
             raise ValueError("mode must be either 'rotation' or 'translation'")
         self.upsample_factor = upsample_factor
         self.mode = mode
         self.force_scale = force_scale
-        self.invert = invert
+        self.log_polar = log_polar
         self.normalization = normalization
         self.max_rotation = max_rotation
         self.max_translation = max_translation
@@ -378,25 +389,29 @@ class PhaseCorrelationModule(PipelineModule):
         print(f"    > Shifts: {shifts}, Error: {e}, Phasediff: {phasediff}")
 
         if self.mode == 'rotation':
-            angle = shifts[0] * 360 / a.shape[0]
-            if self.invert:
-                angle = -angle
+            if self.log_polar:
+                angle = shifts[0] * 360 / a.shape[0]
+            else:
+                angle = shifts[1]
+
             if np.abs(angle) > self.max_rotation:
                 print(f"{Fore.YELLOW}    > Skipping rotation due to high angle: {angle}")
                 angle = 0
                 error[0] = 1
-            radius = self.find_root().get_module_by_type(LogPolarModule.__name__)[0].radius
-            klog = a.shape[1] / np.log(radius)
-            print(f"    > Radius: {radius}")
-            scale = np.exp(shifts[1] / klog)
+
+            if self.log_polar:
+                radius = self.find_root().get_module_by_type(LogPolarModule.__name__)[0].radius
+                klog = a.shape[1] / np.log(radius)
+                scale = np.exp(shifts[1] / klog)
+            else:
+                scale = 1
+
             print(f"    > Angle: {angle}, Scale: {scale}")
             tform += SimilarityTransform(translation=-center)
             tform += SimilarityTransform(scale=1 if self.force_scale else scale, rotation=np.deg2rad(angle))
             tform += SimilarityTransform(translation=center)
             error[2] = e if abs(angle) < 60 else 1
         else:
-            if self.invert:
-                shifts = -shifts
             if np.abs(shifts[0]) > self.max_translation:
                 print(f"{Fore.YELLOW}    > Skipping translation due to high shift[0]: {shifts[0]}")
                 shifts[0] = 0
@@ -496,9 +511,12 @@ class WarpModule(PipelineModule):
         # print(f"    > Combining with weights {w_a} and {w_b}")
         # self.find_root().combined = np.nanmean(np.dstack((self.find_root().combined * w_a, img * w_b)), axis=2)
         # self.find_root().combined = np.nanmean(np.dstack((self.find_root().combined, img)), axis=2)
-        self.find_root().combined = np.nansum(np.dstack((self.find_root().combined * (
-                    self.find_root().combined_count / (self.find_root().combined_count + 1)),
-                                                         (img / (self.find_root().combined_count + 1)))), 2)
+
+        previous_combined = self.find_root().combined * (self.find_root().combined_count / (self.find_root().combined_count + 1))
+        previous_combined[np.isnan(img)] = self.find_root().combined[np.isnan(img)]
+        next_frame = img / (self.find_root().combined_count + 1)
+
+        self.find_root().combined = np.nansum(np.dstack((previous_combined, next_frame)), 2)
 
         self.find_root().combined_count += 1
         # self.find_root().combined = np.maximum(self.find_root().combined, img)

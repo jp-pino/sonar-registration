@@ -16,7 +16,8 @@ def plot_slam2d(optimizer, title):
             yield None
 
     def print_edge(edge):
-        return f"{edge.vertices()[0].id()}->{edge.vertices()[1].id()} ({edge.measurement().to_vector()})\n"
+        v = edge.measurement().to_vector()
+        return f"{edge.vertices()[0].id()}->{edge.vertices()[1].id()} ({v[0]:.2f}, {v[1]:.2f}, {v[2]:.2f})"
 
     fig = go.Figure()
 
@@ -88,9 +89,9 @@ def plot_slam2d(optimizer, title):
             x=[v.estimate()[0] for v in poses],
             y=[v.estimate()[1] for v in poses],
             text=[f"Id: {v.id()}\n"
-                  f"Angle: {v.estimate()[2]}\n"
+                  f"Angle: {v.estimate()[2]:.2f}\n"
                   f"Odometry:{[print_edge(edge) for edge in se2_edges_odom if edge.vertices()[0].id() == v.id()]}\n"
-                  # f"Loop closure:{[print_edge(edge) for edge in se2_edges_loop if edge.vertices()[0].id() == v.id()]}\n"
+                  f"Loop closure:{[print_edge(edge) for edge in se2_edges_loop if edge.vertices()[0].id() == v.id()]}\n"
                   for v in poses],
             mode="markers",
             marker_line_color="midnightblue",
