@@ -2,6 +2,7 @@ import os
 
 import ray
 from matplotlib import pyplot as plt
+import scipy.ndimage as ndi
 
 from pipeline.PipelineModule import PipelineModule
 
@@ -31,12 +32,15 @@ class MetricsModule(PipelineModule):
         self.output = output
 
     def __del__(self):
-        if self.output is not None:
+        if self.output is not None and len(self.psnr) > 0:
             print(f"    > Saving metrics to {self.output}")
             np.savetxt(os.path.join(self.output, "metrics.csv"), np.array([self.psnr, self.ssim]).T, delimiter=",")
 
     def run(self, a, b, mask, tform, error):
         gaussian_image = gaussian_filter(b, sigma=1)
+
+        print(f"min: {np.min(b)}, max: {np.max(b)}")
+        print(f"min: {np.min(gaussian_image)}, max: {np.max(gaussian_image)}")
 
         self.psnr.append(metrics.peak_signal_noise_ratio(b, gaussian_image))
         self.ssim.append(metrics.structural_similarity(b, gaussian_image, data_range=1))
@@ -53,42 +57,70 @@ class IdentityModule(PipelineModule):
         return a, b, mask, tform, error
 
 
-class ResizeModule(PipelineModule):
-    def __init__(self, size):
+class RemapModule(PipelineModule):
+    def __init__(self, original_range, target_range):
         super().__init__()
-        self.size = size
+        self.original_range = original_range
+        self.target_range = target_range
+
+    @staticmethod
+    @ray.remote
+    def remap(data, original_range, target_range):
+        if data is None:
+            return None
+        return data * target_range / original_range
+
+    def run(self, a, b, mask, tform, error):
+        a = self.remap.remote(a, self.original_range, self.target_range)
+        b = self.remap.remote(b, self.original_range, self.target_range)
+        return ray.get(a), ray.get(b), mask, tform, error
+
+
+class ResizeModule(PipelineModule):
+    def __init__(self, ratio):
+        super().__init__()
+        self.ratio = np.sqrt(ratio)
         self.init_origin = False
 
     @staticmethod
     @ray.remote
-    def resize(img, size):
+    def resize(img, ratio):
         if img is None:
             return None
-
-        total_size = img.shape[0] * img.shape[1]
-
-        if total_size <= size:
-            print(
-                f"    > {Fore.YELLOW}Warning: Image size ({total_size}) is smaller than target size({size}), skipping resizing{Style.RESET_ALL}")
-            return img
-
-        ratio = np.sqrt(size / total_size)
         img = resize(img.copy(), (int(img.shape[0] * ratio), int(img.shape[1] * ratio)), anti_aliasing=True)
         return img
 
     def run(self, a, b, mask, tform, error):
         if not self.init_origin:
             total_size = a.shape[0] * a.shape[1]
-            ratio = self.size / total_size
-            self.find_root().origin = np.array(a.shape) * ratio
+            self.find_root().origin = np.array(a.shape) * self.ratio
             self.init_origin = True
 
-        a = self.resize.remote(a, self.size)
-        b = self.resize.remote(b, self.size)
-        mask = self.resize.remote(mask, self.size)
+        a = self.resize.remote(a, self.ratio)
+        b = self.resize.remote(b, self.ratio)
+        mask = self.resize.remote(mask, self.ratio)
 
         return ray.get(a), ray.get(b), ray.get(mask), tform, error
 
+
+class BlurModule(PipelineModule):
+    def __init__(self, size=3):
+        super().__init__()
+        self.size = size
+
+    @staticmethod
+    @ray.remote
+    def blur(img, size):
+        if img is None:
+            return None
+        return ndi.uniform_filter(img, size=size)
+
+    def run(self, a, b, mask, tform, error):
+        a = self.blur.remote(a, self.size)
+        b = self.blur.remote(b, self.size)
+        mask = self.blur.remote(mask, self.size)
+
+        return ray.get(a), ray.get(b), ray.get(mask), tform, error
 
 class FanModule(PipelineModule):
     def __init__(self, fov):

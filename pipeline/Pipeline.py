@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import os
 import time
+import csv
 
 import g2o
 import matplotlib.pyplot as plt
@@ -15,20 +16,26 @@ from skimage.transform import (
 
 
 class Pipeline(PipelineModule):
-    def __init__(self, name=__name__, verbose=False):
+    def __init__(self, name=__name__, output='./out', verbose=False, intermediate_output=None):
         super().__init__()
         self.name = name
+        self.output = output
+        self.verbose = verbose
+        if intermediate_output is None:
+            intermediate_output = []
+        self.intermediate_output = intermediate_output
 
         self.modules = []
         self.outputs = {}
         self.source_cache = []
+
+        self.timing = []
 
         self.total_tform = SimilarityTransform()
         self.centering_tform = SimilarityTransform()
         self.combined = None
         self.combined_count = 0
 
-        self.verbose = verbose
         self.pose_graph = PoseGraph(verbose=verbose)
         self.pose_graph.add_vertex(g2o.SE2(), set_last=True, fixed=True)
 
@@ -36,10 +43,22 @@ class Pipeline(PipelineModule):
 
         self.origin = None
 
+    def __del__(self):
+        print(f"Deleting pipeline {self.name}")
+        if self.find_root() == self:
+            print("Saving timing")
+            self.save_file(f"{self.name}_timing.csv")
+
+    def save_file(self, path):
+        with open(os.path.join(self.output, path), 'w') as f:
+            write = csv.writer(f)
+
+            write.writerow(["module", "time"])
+            write.writerows(self.timing)
+
     def read_cache(self, cache_id):
         a, b, mask = self.source_cache[cache_id]
         return a.copy(), b.copy(), mask.copy()
-
 
     def add_module(self, module: PipelineModule, apply_to=('a', 'b', 'm'), input_stage='chain', output=None):
         name = f"{self.name}_{module.name}__{len(self.modules)}"
@@ -148,6 +167,9 @@ class Pipeline(PipelineModule):
             self.find_root().outputs[module.name] = (a.copy(), b.copy(), mask.copy())
             self.find_root().outputs['chain'] = (a.copy(), b.copy(), mask.copy())
 
+            if module.name in self.find_root().intermediate_output:
+                output = self.find_root().output
+
             if output is not None:
                 if 'a' in apply_to:
                     plt.imsave(os.path.join(output, f"{start_time}_{start}_a_{module.name}.png"), a,
@@ -162,9 +184,12 @@ class Pipeline(PipelineModule):
             total_time = time.time() - start
             color = Fore.RED if total_time > 0.2 else Fore.GREEN
             print(f"{color}  > Module {module.name} took {total_time} seconds{Style.RESET_ALL}")
+            self.find_root().timing.append([module.name, total_time])
 
         self.find_root().outputs[self.name] = (a.copy(), b.copy(), mask.copy())
+        pipeline_time = time.time() - start_time
         print(f"  > Total time for pipeline {self.name}: {time.time() - start_time} seconds")
+        self.find_root().timing.append([self.name, pipeline_time])
 
         return a, b, mask, tform, error
 
@@ -190,9 +215,7 @@ class Pipeline(PipelineModule):
 
             a, b, mask = self.get_module(input_id).read_cache(vertex.id() - 1)
 
-            tform = SimilarityTransform(translation=self.find_root().origin)
-            tform += SimilarityTransform(translation=[x, y], rotation=theta)
-            tform += SimilarityTransform(translation=-self.find_root().origin)
+            tform = SimilarityTransform(translation=[x, y], rotation=theta)
             self.total_tform = tform
 
             pipeline.run(a, b, mask, tform, error)
@@ -211,7 +234,6 @@ class Pipeline(PipelineModule):
                     continue
                 print(f"Edge {edge.id()} at {edge.measurement().to_vector()}")
 
-
         start_time = time.time()
         print("Optimizing...")
         self.pose_graph.get_last().set_fixed(True)
@@ -228,6 +250,3 @@ class Pipeline(PipelineModule):
                 if type(edge) != g2o.EdgeSE2:
                     continue
                 print(f"Realigned Edge {edge.id()} at {edge.measurement().to_vector()}")
-
-
-
