@@ -176,13 +176,19 @@ class OdometerModule(PipelineModule):
             print("    > Saved")
 
             self.node_id = []
+            self.distance_delta = []
             self.total_distance = []
+            self.distance_from_start = []
             self.x = []
             self.y = []
             self.theta = []
             self.speed_x = []
+            # self.error_x = []
             self.speed_y = []
+#             self.error_y = []
             self.speed_theta = []
+#             self.error_theta = []
+
             print("Generating realigned odometry")
             total_tform = SimilarityTransform()
             for vertex in reversed(self.find_root().pose_graph.optimizer.vertices().values()):
@@ -195,6 +201,9 @@ class OdometerModule(PipelineModule):
                 tform = SimilarityTransform(translation=[x, y], rotation=theta)
                 total_tform += tform
                 self.extract_data(tform, total_tform)
+#                 self.error_x.append(0)
+#                 self.error_y.append(0)
+#                 self.error_theta.append(0)
             self.save_file("realigned_odometer.csv")
             print("    > Saved")
 

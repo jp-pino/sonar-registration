@@ -28,7 +28,7 @@ def read_combined(file_paths, type_names=[telemetry_pb2.MultibeamPingTel]):
     remove = []
 
     start_ts = None
-    interval = 5
+    interval = 1
 
     if telemetry_pb2.MultibeamPingTel in type_names:
         print("Searching for start timestamp")
@@ -60,11 +60,13 @@ def read_combined(file_paths, type_names=[telemetry_pb2.MultibeamPingTel]):
     while generators:
         for i, generator in enumerate(generators):
             ts = start_ts
+            count = 0
             while ts - start_ts < interval:
                 try:
                     message, ts = next(generator)
                     if ts > start_ts:
                         buffer.append((message, ts))
+                    count += 1
                 except StopIteration:
                     remove.append(i)
                     break

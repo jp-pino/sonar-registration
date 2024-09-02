@@ -76,14 +76,14 @@ def create_fourier_mellin(args, bearings, fov, height, width, range_resolution):
     else:
         conditioning.add_module(ResizeModule(args.resize))
     conditioning.add_module(FanModule2(bearings, output=args.out))
-    conditioning.add_module(PaddingModule(4))
+    conditioning.add_module(PaddingModule(0.25))
 
     pipeline.add_module(MetricsModule(output=args.out))
 
     filtering_id, filtering = pipeline.add_module(Pipeline('filtering'))
-    # filtering.add_module(BandpassTestingModule(output=out))
+    # filtering.add_module(BandpassTestingModule(output=args.out))
     filtering.add_module(BandpassModule(args.bandpass_low, args.bandpass_high))
-    filtering.add_module(MaskModule(padding=60, sigma=15))
+    filtering.add_module(MaskModule(padding=60, sigma=15), apply_to=('a', 'b'))
 
     registration_id, registration = pipeline.add_module(Pipeline('registration'))
     start_id, _ = registration.add_module(IdentityModule())
@@ -129,9 +129,9 @@ def create_phase_correlation(args, bearings, fov, height, width, range_resolutio
     registration.add_module(MaskModule(padding=60, sigma=15))
     registration.add_module(PhaseCorrelationModule(20, 'rotation', log_polar=False))
     registration.add_module(FanModule2(bearings, output=args.out), input_stage=resize_id)
-    padding_id, _ = registration.add_module(PaddingModule(4))
+    padding_id, _ = registration.add_module(PaddingModule(0.25))
     registration.add_module(BandpassModule(args.bandpass_low, args.bandpass_high))
-    registration.add_module(MaskModule(padding=60, sigma=15))
+    registration.add_module(MaskModule(padding=60, sigma=15), apply_to=('a', 'b'))
     registration.add_module(WarpModule(), apply_to=('b', 'm'))
     registration.add_module(PhaseCorrelationModule(10, 'translation'))
 
@@ -150,7 +150,7 @@ def create_phase_correlation(args, bearings, fov, height, width, range_resolutio
     realignment = Pipeline("realignment")
     realignment.add_module(ResizeModule(args.resize))
     realignment.add_module(FanModule2(bearings, output=args.out))
-    realignment.add_module(PaddingModule(4))
+    realignment.add_module(PaddingModule(0.25))
     realignment.add_module(WarpModule(combine=True), 'b')
 
     return pipeline, registration_id, realignment
@@ -173,7 +173,7 @@ def main():
     parser.add_argument("--start_frame", help="Start frame", type=int, default=0)
     parser.add_argument("--max_frames", help="Max frames", type=int, default=None)
     parser.add_argument("--verbose", help="Verbose", action="store_true")
-    parser.add_argument("--resize", help="Resize the images", type=int, default=0.25)
+    parser.add_argument("--resize", help="Resize the images", type=float, default=0.25)
     parser.add_argument("--disable_resizing", help="Disable resizing", action="store_true", default=False)
     parser.add_argument("--disable_loop_closure", help="Disable loop closure", action="store_true", default=False)
     parser.add_argument("--disable_realignment", help="Disable realignment", action="store_true", default=False)
@@ -181,7 +181,7 @@ def main():
     parser.add_argument("--algorithm", help="Use fourier-mellin transform", choices=list(Algorithm),
                         type=Algorithm.from_string, default=Algorithm.FOURIER_MELLIN)
     parser.add_argument("--intermediate_output", help="Output intermediate images", action="append", type=str)
-    parser.add_argument("--print", help="Print the pipeline", action="store_true")
+    parser.add_argument("--print", help="Print the pipeline details", action="store_true")
     argcomplete.autocomplete(parser)
 
     # Parse arguments
@@ -253,7 +253,7 @@ def main():
         return
 
     count = 1
-    prev_northing = prev_easting = start_odometer = 0
+    prev_northing = prev_easting = prev_heading = start_odometer = 0
     dvl_log = []
     imu_log = []
     while True:
@@ -309,20 +309,32 @@ def main():
 
             if start_odometer == 0:
                 start_odometer = position.odometer
+                prev_northing = position.northing
+                prev_easting = position.easting
+                prev_heading = position.heading
 
             current_northing = position.northing
             current_easting = position.easting
+            current_heading = position.heading
             current_odometer = position.odometer
 
             scaled_northing = (current_northing - prev_northing) / range_resolution
             scaled_easting = (current_easting - prev_easting) / range_resolution
 
             # pipeline.pose_graph.add_landmark_to_last_vertex(scaled_northing, scaled_easting)
+
+            dvl_log.append([count,
+                            pos_ts,
+                            current_northing - prev_northing,
+                            current_easting - prev_easting,
+                            current_heading - prev_heading,
+                            current_odometer - start_odometer,
+                            position.is_valid])
+
             prev_northing = current_northing
             prev_easting = current_easting
+            prev_heading = current_heading
 
-            dvl_log.append([count, pos_ts, current_northing, current_easting, position.heading,
-                            current_odometer - start_odometer])
             print(f"Total traveled distance: {current_odometer - start_odometer}")
 
         elif isinstance(msg, telemetry_pb2.CalibratedImuTel):
@@ -331,7 +343,7 @@ def main():
                             imu.gyroscope.x, imu.gyroscope.y, imu.gyroscope.z])
 
     np.savetxt(os.path.join(args.out, "dvl_odometer.csv"), np.array(dvl_log), delimiter=",",
-               header="frame_id,ts,northing,easting,heading,odometer,")
+               header="frame_id,ts,northing,easting,heading,odometer,valid")
 
     np.savetxt(os.path.join(args.out, "imu.csv"), np.array(imu_log), delimiter=",",
                header="frame_id,ts,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z")

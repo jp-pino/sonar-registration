@@ -264,7 +264,7 @@ class PaddingModule(PipelineModule):
         return np.pad(data, pad_size, mode='constant', constant_values=0)
 
     def run(self, a, b, mask, tform, error):
-        pad_size = np.max(a.shape) // self.padding_ratio
+        pad_size = int(np.max(a.shape) * self.padding_ratio)
         a = self.pad.remote(a, pad_size)
         b = self.pad.remote(b, pad_size)
         mask = self.pad.remote(mask, pad_size)
@@ -339,7 +339,7 @@ class MaskModule(PipelineModule):
         a = self.apply_mask.remote(a, self.mask)
         b = self.apply_mask.remote(b, self.mask)
 
-        return ray.get(a), ray.get(b), mask, tform, error
+        return ray.get(a), ray.get(b), self.mask, tform, error
 
 
 class FourierModule(PipelineModule):
@@ -424,7 +424,7 @@ class PhaseCorrelationModule(PipelineModule):
             if self.log_polar:
                 angle = shifts[0] * 360 / a.shape[0]
             else:
-                angle = shifts[1]
+                angle = shifts[1] * 120 / a.shape[1]
 
             if np.abs(angle) > self.max_rotation:
                 print(f"{Fore.YELLOW}    > Skipping rotation due to high angle: {angle}")
@@ -535,8 +535,11 @@ class WarpModule(PipelineModule):
 
         print(f"    > Image size: {img.shape}, Mask size: {mask.shape}")
 
+        # Resize mask
         mask = warp(mask, SimilarityTransform(), output_shape=img.shape)
+        # Make values outside of mask np.nan
         img[mask < 1] = np.nan
+        # Warp image and make all values outside of image np.nan
         img = warp(img, (self.find_root().centering_tform + self.find_root().total_tform.inverse), output_shape=self.find_root().combined.shape, mode='constant', cval=np.nan)
         # w_a = 1.0 * self.find_root().combined_count / (self.find_root().combined_count + 1)
         # w_b = 1.0 / (self.find_root().combined_count + 1)
